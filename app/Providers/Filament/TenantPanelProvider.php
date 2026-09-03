@@ -34,7 +34,7 @@ class TenantPanelProvider extends PanelProvider
             // ->path('admin')
             ->path('{tenant}/admin')
             ->login()
-            ->brandName(fn () => tenant()?->name ?? 'BIO-Notifier')
+            ->brandName(fn () => tenant()?->name ?? 'Biomatrix')
             ->favicon(asset('icon-192-v3.png'))
             ->colors([
                 'primary' => Color::Amber,

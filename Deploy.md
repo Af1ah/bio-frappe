@@ -2,7 +2,7 @@
 
 Since we have merged everything into a single, unified application, deploying to a fresh production instance (like a VPS or Laravel Forge) is now incredibly simple. 
 
-You no longer need to worry about custom packages, symlinks, or private repositories. Your entire app lives in one place on GitHub: `https://github.com/Af1ah/bio-notifier`.
+You no longer need to worry about custom packages, symlinks, or private repositories. Your entire app lives in one place on GitHub: `https://github.com/Af1ah/biomatrix`.
 
 ## Prerequisites
 
@@ -48,7 +48,7 @@ sudo apt install supervisor -y
 ### 1. Clone the Repository
 SSH into your production server and navigate to your web directory (e.g. `/var/www/html`), then clone your repository:
 ```bash
-git clone https://github.com/Af1ah/bio-notifier.git .
+git clone https://github.com/Af1ah/biomatrix.git .
 ```
 
 ### 2. Install Dependencies
@@ -119,12 +119,12 @@ To ensure the queue worker (like WhatsApp notifications) runs continuously in th
 
 1. Create a new configuration file:
 ```bash
-sudo nano /etc/supervisor/conf.d/bio-notifier-worker.conf
+sudo nano /etc/supervisor/conf.d/biomatrix-worker.conf
 ```
 
-2. Add the following configuration (replace `/var/www/html` with your exact project path, e.g. `/var/www/bio-notifier`):
+2. Add the following configuration (replace `/var/www/html` with your exact project path, e.g. `/var/www/biomatrix`):
 ```ini
-[program:bio-notifier-worker]
+[program:biomatrix-worker]
 process_name=%(program_name)s_%(process_num)02d
 command=php /var/www/html/artisan queue:work --sleep=3 --tries=3 --max-time=3600
 autostart=true
@@ -142,12 +142,12 @@ stopwaitsecs=3600
 ```bash
 sudo supervisorctl reread
 sudo supervisorctl update
-sudo supervisorctl start bio-notifier-worker:*
+sudo supervisorctl start biomatrix-worker:*
 ```
 
 ### 8. Web Server Configuration (Nginx & Multi-Tenancy)
 
-Bio-Notifier uses an isolated domain-based routing system for tenants. To allow clients to have their own domains (like `client1.noti.ariise.cloud`) without breaking other apps on your server, you need to set up a wildcard properly in Nginx.
+Biomatrix uses an isolated domain-based routing system for tenants. To allow clients to have their own domains (like `client1.noti.ariise.cloud`) without breaking other apps on your server, you need to set up a wildcard properly in Nginx.
 
 **DNS Configuration in your Registrar:**
 1. Point an A-record for your base domain (e.g. `noti.ariise.cloud`) to your server IP.
@@ -156,7 +156,7 @@ Bio-Notifier uses an isolated domain-based routing system for tenants. To allow 
 **Nginx Setup:**
 1. Create a new Nginx server block configuration:
 ```bash
-sudo nano /etc/nginx/sites-available/bio-notifier
+sudo nano /etc/nginx/sites-available/biomatrix
 ```
 
 2. Add the following standard Nginx setup. Ensure you explicitly list the wildcard in `server_name` so Nginx routes all tenant traffic here!
@@ -202,7 +202,7 @@ server {
 
 3. Enable the site and restart Nginx:
 ```bash
-sudo ln -s /etc/nginx/sites-available/bio-notifier /etc/nginx/sites-enabled/
+sudo ln -s /etc/nginx/sites-available/biomatrix /etc/nginx/sites-enabled/
 sudo nginx -t
 sudo systemctl restart nginx
 ```
@@ -241,8 +241,8 @@ Docker support has been added to the project via Laravel Sail. This makes it inc
 
 1. **Clone the repository:**
 ```bash
-git clone https://github.com/Af1ah/bio-notifier.git
-cd bio-notifier
+git clone https://github.com/Af1ah/biomatrix.git
+cd biomatrix
 ```
 
 2. **Install Composer Dependencies (using a small Docker container):**

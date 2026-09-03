@@ -2,10 +2,10 @@
 
 namespace App\Models;
 
-use Stancl\Tenancy\Database\Models\Tenant as BaseTenant;
 use Stancl\Tenancy\Contracts\TenantWithDatabase;
 use Stancl\Tenancy\Database\Concerns\HasDatabase;
 use Stancl\Tenancy\Database\Concerns\HasDomains;
+use Stancl\Tenancy\Database\Models\Tenant as BaseTenant;
 
 class Organisation extends BaseTenant implements TenantWithDatabase
 {
@@ -22,17 +22,6 @@ class Organisation extends BaseTenant implements TenantWithDatabase
         'logo',
         'brand_color',
         'status',
-        'ebio_url',
-        'ebio_webhook_token',
-        'ebio_aes_password',
-        'ebio_soap_username',
-        'ebio_soap_password',
-    ];
-
-    protected $casts = [
-        'ebio_aes_password' => 'encrypted',
-        'ebio_soap_username' => 'encrypted',
-        'ebio_soap_password' => 'encrypted',
     ];
 
     public static function getCustomColumns(): array
@@ -47,11 +36,6 @@ class Organisation extends BaseTenant implements TenantWithDatabase
             'logo',
             'brand_color',
             'status',
-            'ebio_url',
-            'ebio_webhook_token',
-            'ebio_aes_password',
-            'ebio_soap_username',
-            'ebio_soap_password',
         ];
     }
 
@@ -78,15 +62,15 @@ class Organisation extends BaseTenant implements TenantWithDatabase
             if (empty($centralDomain)) {
                 $centralDomain = parse_url(env('APP_URL', 'http://localhost'), PHP_URL_HOST);
             }
-            
+
             $tenant->domains()->create([
-                'domain' => $tenant->shortname . '.' . ltrim($centralDomain, '.')
+                'domain' => $tenant->shortname.'.'.ltrim($centralDomain, '.'),
             ]);
 
             // Also create a localhost domain for easy local testing
             if ($centralDomain !== 'localhost') {
                 $tenant->domains()->create([
-                    'domain' => $tenant->shortname . '.localhost'
+                    'domain' => $tenant->shortname.'.localhost',
                 ]);
             }
         });

@@ -2,28 +2,42 @@
 
 namespace App\Filament\Tenant\Resources;
 
+use App\Filament\Tenant\Resources\UserResource\Pages;
+use App\Models\Branch;
+use App\Models\Department;
+use App\Models\Device;
+use App\Models\TaskGroup;
+use App\Models\User;
+use App\Services\Attendance\DeviceCommandBuilder;
+use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
+use Filament\Forms\Components\CheckboxList;
 use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
+use Filament\Infolists\Components\TextEntry;
+use Filament\Infolists\Components\ViewEntry;
+use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
+use Filament\Schemas\Components\Group;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Filament\Tables;
 use Filament\Tables\Table;
-use App\Filament\Tenant\Resources\UserResource\Pages;
-use App\Models\User;
+use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\Eloquent\Model;
 
 class UserResource extends Resource
 {
     protected static ?string $model = User::class;
 
-    protected static string | \BackedEnum | null $navigationIcon = 'heroicon-o-users';
+    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-users';
 
-    protected static ?int $navigationSort = 4;
+    protected static ?int $navigationSort = 3;
 
     protected static ?string $modelLabel = 'User';
 
@@ -34,7 +48,7 @@ class UserResource extends Resource
         return ['name', 'pin', 'email'];
     }
 
-    public static function getGlobalSearchResultIcon(\Illuminate\Database\Eloquent\Model $record): string
+    public static function getGlobalSearchResultIcon(Model $record): string
     {
         return 'heroicon-o-user';
     }
@@ -43,7 +57,7 @@ class UserResource extends Resource
 
     public static function getNavigationGroup(): ?string
     {
-        return null;
+        return 'Attendance';
     }
 
     public static function form(Schema $schema): Schema
@@ -84,12 +98,6 @@ class UserResource extends Resource
                         ->password()
                         ->revealable()
                         ->autocomplete('new-password'),
-                    \Filament\Forms\Components\DatePicker::make('valid_from')
-                        ->label('Valid From')
-                        ->nullable(),
-                    \Filament\Forms\Components\DatePicker::make('valid_to')
-                        ->label('Valid To')
-                        ->nullable(),
                     Toggle::make('is_enabled')
                         ->default(true),
                 ])
@@ -101,24 +109,23 @@ class UserResource extends Resource
                         ->relationship('branch', 'name')
                         ->getOptionLabelFromRecordUsing(fn ($record) => $record->display_name)
                         ->label('Branch')
-                        ->default(fn () => \App\Models\Branch::count() === 1 ? \App\Models\Branch::first()->id : null)
+                        ->default(fn () => Branch::count() === 1 ? Branch::first()->id : null)
                         ->live()
                         ->nullable(),
                     Select::make('department_id')
-                        ->relationship('department', 'name', fn ($query, $get) => 
-                            $get('branch_id') 
+                        ->relationship('department', 'name', fn ($query, $get) => $get('branch_id')
                                 ? $query->whereHas('branches', fn ($q) => $q->where('branches.id', $get('branch_id')))
                                 : $query
                         )
                         ->label('Department')
-                        ->default(fn () => \App\Models\Department::count() === 1 ? \App\Models\Department::first()->id : null)
+                        ->default(fn () => Department::count() === 1 ? Department::first()->id : null)
                         ->nullable(),
                     Select::make('group')
                         ->label('Designation / Group')
-                        ->options(\App\Models\User::whereNotNull('group')->where('group', '!=', '')->distinct()->pluck('group', 'group'))
+                        ->options(User::whereNotNull('group')->where('group', '!=', '')->distinct()->pluck('group', 'group'))
                         ->searchable()
                         ->createOptionForm([
-                            \Filament\Forms\Components\TextInput::make('name')->required()->label('Name'),
+                            TextInput::make('name')->required()->label('Name'),
                         ])
                         ->createOptionUsing(fn (array $data) => $data['name'])
                         ->nullable(),
@@ -127,10 +134,10 @@ class UserResource extends Resource
                         ->label('Task Groups')
                         ->multiple()
                         ->searchable()
-                        ->default(fn () => \App\Models\TaskGroup::count() === 1 ? [\App\Models\TaskGroup::first()->id] : [])
+                        ->default(fn () => TaskGroup::count() === 1 ? [TaskGroup::first()->id] : [])
                         ->createOptionForm([
-                            \Filament\Forms\Components\TextInput::make('name')->required(),
-                            \Filament\Forms\Components\Textarea::make('description'),
+                            TextInput::make('name')->required(),
+                            Textarea::make('description'),
                         ])
                         ->nullable(),
                 ])
@@ -140,73 +147,78 @@ class UserResource extends Resource
         ]);
     }
 
-    public static function infolist(\Filament\Schemas\Schema $schema): \Filament\Schemas\Schema
+    public static function infolist(Schema $schema): Schema
     {
         return $schema
             ->components([
-                \Filament\Schemas\Components\Group::make([
-                    \Filament\Schemas\Components\Section::make('User Details')
+                Group::make([
+                    Section::make('User Details')
                         ->schema([
-                            \Filament\Infolists\Components\TextEntry::make('name')
+                            TextEntry::make('name')
                                 ->label('Name')
                                 ->weight('bold')
                                 ->size('lg'),
-                            \Filament\Infolists\Components\TextEntry::make('pin')
+                            TextEntry::make('pin')
                                 ->label('PIN'),
-                            \Filament\Infolists\Components\TextEntry::make('whatsapp_number')
+                            TextEntry::make('whatsapp_number')
                                 ->label('WhatsApp Number')
                                 ->default('Not Provided'),
-                            \Filament\Infolists\Components\TextEntry::make('branch.name')
+                            TextEntry::make('branch.name')
                                 ->label('Branch')
                                 ->default('Not Assigned'),
-                            \Filament\Infolists\Components\TextEntry::make('department.name')
+                            TextEntry::make('department.name')
                                 ->label('Department')
                                 ->default('Not Assigned'),
-                            \Filament\Infolists\Components\TextEntry::make('group')
+                            TextEntry::make('group')
                                 ->label('Designation / Group')
                                 ->default('Not Assigned'),
-                            \Filament\Infolists\Components\TextEntry::make('fingerprints')
+                            TextEntry::make('fingerprints')
                                 ->label('Added Fingerprints')
                                 ->badge()
-                                ->state(function ($record) {
+                                ->formatStateUsing(function ($state, $record) {
                                     $rawState = $record->fingerprints;
-                                    if (empty($rawState) || !is_array($rawState)) return ['None'];
+                                    if (empty($rawState) || ! is_array($rawState)) {
+                                        return 'None';
+                                    }
                                     $fingers = [
                                         0 => 'Left Pinky', 1 => 'Left Ring', 2 => 'Left Middle', 3 => 'Left Index', 4 => 'Left Thumb',
-                                        5 => 'Right Thumb', 6 => 'Right Index', 7 => 'Right Middle', 8 => 'Right Ring', 9 => 'Right Pinky'
+                                        5 => 'Right Thumb', 6 => 'Right Index', 7 => 'Right Middle', 8 => 'Right Ring', 9 => 'Right Pinky',
                                     ];
                                     $added = [];
                                     foreach ($rawState as $key => $fp) {
-                                        $id = is_numeric($key) ? (int)$key : ($fp['finger_id'] ?? $fp['fid'] ?? null);
+                                        $id = is_numeric($key) ? (int) $key : ($fp['finger_id'] ?? $fp['fid'] ?? null);
                                         if ($id !== null && isset($fingers[$id])) {
                                             $added[] = $fingers[$id];
                                         } elseif ($id !== null) {
-                                            $added[] = 'Finger ' . $id;
+                                            $added[] = 'Finger '.$id;
                                         }
                                     }
-                                    return count($added) > 0 ? $added : [count($rawState) . ' Template(s)'];
-                                })
-                                ->color('success')
-                                ->columnSpanFull(),
-                        ])->columns(['default' => 2, 'sm' => 2, 'md' => 2]),
 
-                    \Filament\Schemas\Components\Section::make('Shift Details')
+                                    return count($added) > 0 ? implode(', ', $added) : count($rawState).' Template(s)';
+                                })
+                                ->color('success'),
+                        ])->columns(3),
+
+                    Section::make('Shift Details')
                         ->schema([
-                            \Filament\Infolists\Components\TextEntry::make('shift')
+                            TextEntry::make('shift')
                                 ->label('Active Shift')
                                 ->formatStateUsing(function ($record) {
                                     $schedule = $record->getActiveSchedule();
-                                    if (!$schedule) return 'No Active Schedule';
+                                    if (! $schedule) {
+                                        return 'No Active Schedule';
+                                    }
                                     $rules = $schedule->rules;
-                                    $time = ($rules['start_time'] ?? '--:--') . ' to ' . ($rules['end_time'] ?? '--:--');
-                                    return $schedule->name . ' (' . $time . ')';
+                                    $time = ($rules['start_time'] ?? '--:--').' to '.($rules['end_time'] ?? '--:--');
+
+                                    return $schedule->name.' ('.$time.')';
                                 }),
                         ]),
                 ])->columnSpanFull(),
 
-                \Filament\Schemas\Components\Section::make('Attendance Calendar')
+                Section::make('Attendance Calendar')
                     ->schema([
-                        \Filament\Infolists\Components\ViewEntry::make('calendar')
+                        ViewEntry::make('calendar')
                             ->hiddenLabel()
                             ->view('filament.tenant.components.attendance-calendar')
                             ->columnSpanFull(),
@@ -234,8 +246,7 @@ class UserResource extends Resource
                     ->label('Branch')
                     ->sortable()
                     ->searchable()
-                    ->toggleable()
-                    ->visibleFrom('md'),
+                    ->toggleable(),
                 Tables\Columns\TextColumn::make('department.name')
                     ->label('Department')
                     ->sortable()
@@ -249,11 +260,9 @@ class UserResource extends Resource
                 Tables\Columns\TextColumn::make('privilege')
                     ->badge()
                     ->formatStateUsing(fn ($state) => $state === 14 ? 'Admin' : 'User')
-                    ->color(fn ($state): string => $state === 14 ? 'primary' : 'gray')
-                    ->visibleFrom('md'),
+                    ->color(fn ($state): string => $state === 14 ? 'primary' : 'gray'),
                 Tables\Columns\IconColumn::make('is_enabled')
-                    ->boolean()
-                    ->visibleFrom('md'),
+                    ->boolean(),
             ])
             ->filters([
                 Tables\Filters\SelectFilter::make('privilege')
@@ -271,270 +280,162 @@ class UserResource extends Resource
                     ->label('Department'),
                 Tables\Filters\SelectFilter::make('group')
                     ->label('Designation / Group')
-                    ->options(fn () => \App\Models\User::whereNotNull('group')->where('group', '!=', '')->distinct()->pluck('group', 'group')->toArray()),
+                    ->options(fn () => User::whereNotNull('group')->where('group', '!=', '')->distinct()->pluck('group', 'group')->toArray()),
                 Tables\Filters\TernaryFilter::make('is_enabled')
                     ->default(true),
             ])
             ->recordActions([
-                \Filament\Actions\ActionGroup::make([
-                    \Filament\Actions\Action::make('addBiometric')
-                        ->label('Add Biometric')
-                        ->icon('heroicon-o-finger-print')
-                        ->form([
-                            \Filament\Forms\Components\Select::make('device_id')
-                                ->label('Select Device')
-                                ->options(function () {
-                                    return \App\Models\Device::all()->mapWithKeys(function ($d) {
-                                        return [$d->id => $d->name ?: $d->serial_number];
-                                    })->toArray();
-                                })
-                                ->required()
-                                ->searchable(),
-                            \Filament\Forms\Components\Select::make('type')
-                                ->label('Biometric Type')
-                                ->options([
-                                    'finger' => 'Fingerprint',
-                                    'face' => 'Face',
-                                ])
-                                ->required()
-                                ->live(),
-                            \Filament\Forms\Components\Select::make('finger_index')
-                                ->label('Select Finger')
-                                ->options([
-                                    0 => '0 - Left Pinky',
-                                    1 => '1 - Left Ring',
-                                    2 => '2 - Left Middle',
-                                    3 => '3 - Left Index',
-                                    4 => '4 - Left Thumb',
-                                    5 => '5 - Right Thumb',
-                                    6 => '6 - Right Index',
-                                    7 => '7 - Right Middle',
-                                    8 => '8 - Right Ring',
-                                    9 => '9 - Right Pinky',
-                                ])
-                                ->visible(fn ($get) => $get('type') === 'finger')
-                                ->required(fn ($get) => $get('type') === 'finger'),
-                        ])
-                        ->action(function (\App\Models\User $record, array $data) {
-                            \App\Jobs\EnrollEbioBiometricJob::dispatch(
-                                tenancy()->tenant,
-                                $record->id,
-                                $data['device_id'],
-                                $data['type'],
-                                $data['finger_index'] ?? null
-                            );
-                            \Filament\Notifications\Notification::make()
-                                ->title('Enrollment command queued')
-                                ->success()
-                                ->send();
-                        }),
-                    ViewAction::make(),
-                    EditAction::make(),
-                ]),
+                ViewAction::make(),
+                EditAction::make(),
             ])
             ->bulkActions([
-                \Filament\Actions\BulkActionGroup::make([
-                    \Filament\Actions\DeleteBulkAction::make(),
-                    \Filament\Actions\BulkAction::make('enableUsers')
-                        ->label('Unblock user from door')
-                        ->icon('heroicon-o-check-circle')
-                        ->color('success')
-                        ->form([
-                            \Filament\Forms\Components\Select::make('location')
-                                ->label('Select Device(s)')
-                                ->options(function () {
-                                    return \App\Models\Device::all()->mapWithKeys(function ($d) {
-                                        $loc = $d->options['location'] ?? null;
-                                        return $loc ? [$loc => ($d->name ?: $d->serial_number) . " (Location: $loc)"] : [];
-                                    })->filter()->toArray();
-                                })
-                                ->searchable()
-                                ->multiple()
-                                ->placeholder('Leave blank for all devices'),
-                        ])
-                        ->action(function (\Illuminate\Database\Eloquent\Collection $records, array $data) {
-                            $location = !empty($data['location']) ? (is_array($data['location']) ? implode(',', $data['location']) : $data['location']) : '';
-                            $organisation = tenancy()->tenant;
-                            $count = 0;
-                            foreach ($records as $record) {
-                                \App\Jobs\BlockUnblockEbioUserJob::dispatch($organisation, $record->id, $location, false); // false = Unblock
-                                $count++;
-                            }
-                            \Filament\Notifications\Notification::make()
-                                ->title('Unblocked and Queued')
-                                ->body("{$count} user(s) unblocked and queued for sync.")
-                                ->success()
-                                ->send();
-                        })
-                        ->deselectRecordsAfterCompletion(),
-                    \Filament\Actions\BulkAction::make('disableUsers')
-                        ->label('Block user from door')
-                        ->icon('heroicon-o-x-circle')
-                        ->color('warning')
-                        ->form([
-                            \Filament\Forms\Components\Select::make('location')
-                                ->label('Select Device(s)')
-                                ->options(function () {
-                                    return \App\Models\Device::all()->mapWithKeys(function ($d) {
-                                        $loc = $d->options['location'] ?? null;
-                                        return $loc ? [$loc => ($d->name ?: $d->serial_number) . " (Location: $loc)"] : [];
-                                    })->filter()->toArray();
-                                })
-                                ->searchable()
-                                ->multiple()
-                                ->placeholder('Leave blank for all devices'),
-                        ])
-                        ->action(function (\Illuminate\Database\Eloquent\Collection $records, array $data) {
-                            $location = !empty($data['location']) ? (is_array($data['location']) ? implode(',', $data['location']) : $data['location']) : '';
-                            $organisation = tenancy()->tenant;
-                            $count = 0;
-                            foreach ($records as $record) {
-                                \App\Jobs\BlockUnblockEbioUserJob::dispatch($organisation, $record->id, $location, true); // true = Block
-                                $count++;
-                            }
-                            \Filament\Notifications\Notification::make()
-                                ->title('Blocked and Queued')
-                                ->body("{$count} user(s) blocked and queued for sync.")
-                                ->success()
-                                ->send();
-                        })
-                        ->deselectRecordsAfterCompletion(),
-                    \Filament\Actions\BulkAction::make('pushToDevice')
+                BulkActionGroup::make([
+                    DeleteBulkAction::make(),
+                    BulkAction::make('pushToDevice')
                         ->icon('heroicon-o-arrow-up-on-square')
                         ->color('success')
-                        ->label('Push to Device / Location')
+                        ->label('Push to Device')
                         ->form([
-                            \Filament\Forms\Components\Select::make('location')
-                                ->label('Select Device(s)')
-                                ->options(function () {
-                                    $devices = \App\Models\Device::all();
-                                    $options = [];
-                                    foreach ($devices as $d) {
-                                        $loc = $d->options['location'] ?? null;
-                                        if ($loc) {
-                                            $label = ($d->name ?: $d->serial_number) . " (Location: $loc)";
-                                            $options[$loc] = $label;
+                            Select::make('device_ids')
+                                ->label('Select Devices to Sync To')
+                                ->multiple()
+                                ->options(Device::all()->mapWithKeys(fn ($d) => [$d->id => $d->name ?: $d->serial_number])->toArray())
+                                ->default(fn () => Device::count() === 1 ? [Device::first()->id] : [])
+                                ->required(),
+                            CheckboxList::make('sync_properties')
+                                ->label('What to sync?')
+                                ->options([
+                                    'profile' => 'Basic Profile (Name, Card, Privilege, Password)',
+                                    'biometrics' => 'Biometrics (Fingerprints)',
+                                ])
+                                ->default(['profile', 'biometrics'])
+                                ->required()
+                                ->columns(1),
+                        ])
+                        ->action(function (Collection $records, array $data) {
+                            $deviceIds = $data['device_ids'] ?? [];
+                            if (empty($deviceIds) && Device::count() === 1) {
+                                $deviceIds = [Device::first()->id];
+                            }
+
+                            $syncProfile = in_array('profile', $data['sync_properties']);
+                            $syncBio = in_array('biometrics', $data['sync_properties']);
+
+                            $devices = Device::whereIn('id', $deviceIds)->get();
+                            $builder = app(DeviceCommandBuilder::class);
+
+                            foreach ($devices as $device) {
+                                foreach ($records as $user) {
+                                    if ($syncProfile) {
+                                        $builder->addUser($device, [
+                                            'pin' => $user->pin,
+                                            'name' => $user->name,
+                                            'card' => $user->card_number,
+                                            'privilege' => $user->privilege,
+                                            'password' => $user->device_password,
+                                            'group' => $user->group ?? 1,
+                                        ]);
+                                    }
+
+                                    if ($syncBio) {
+                                        $fingerprints = $user->fingerprints;
+                                        if (is_array($fingerprints)) {
+                                            foreach ($fingerprints as $key => $fp) {
+                                                $id = is_numeric($key) ? (int) $key : ($fp['finger_id'] ?? $fp['fid'] ?? null);
+                                                if ($id !== null && isset($fp['tmp'])) {
+                                                    $builder->addFingerprint($device, $user->pin, $id, $fp['tmp']);
+                                                }
+                                            }
                                         }
                                     }
-                                    return $options;
-                                })
-                                ->searchable()
-                                ->multiple()
-                                ->placeholder('Leave blank for all devices'),
-                        ])
-                        ->action(function (\Illuminate\Database\Eloquent\Collection $records, array $data) {
-                            $location = '';
-                            if (!empty($data['location'])) {
-                                $location = is_array($data['location']) ? implode(',', $data['location']) : $data['location'];
+                                }
                             }
-                            
-                            $organisation = tenancy()->tenant;
-                            $count = 0;
-                            
-                            foreach ($records as $user) {
-                                \App\Jobs\PushEbioUserJob::dispatch($organisation, $user->id, $location);
-                                $count++;
-                            }
-                            
-                            \Filament\Notifications\Notification::make()
-                                ->title('Sync Queued')
-                                ->body("{$count} user(s) queued for sync to eBioServer.")
+
+                            $deviceCount = $devices->count();
+                            Notification::make()
+                                ->title('Commands Queued')
+                                ->body("{$records->count()} user(s) synced across {$deviceCount} device(s) for the next ADMS poll.")
                                 ->success()
                                 ->send();
                         })
                         ->deselectRecordsAfterCompletion(),
-                    \Filament\Actions\BulkAction::make('deleteFromDevice')
+                    BulkAction::make('deleteFromDevice')
                         ->icon('heroicon-o-trash')
                         ->color('danger')
-                        ->label('Delete from Devices')
-                        ->requiresConfirmation()
+                        ->label('Delete from Device')
                         ->form([
-                            \Filament\Forms\Components\Select::make('location')
-                                ->label('Select Device(s)')
-                                ->options(function () {
-                                    $devices = \App\Models\Device::all();
-                                    $options = [];
-                                    foreach ($devices as $d) {
-                                        $loc = $d->options['location'] ?? null;
-                                        if ($loc) {
-                                            $label = ($d->name ?: $d->serial_number) . " (Location: $loc)";
-                                            $options[$loc] = $label;
-                                        }
-                                    }
-                                    return $options;
-                                })
-                                ->searchable()
-                                ->multiple()
-                                ->placeholder('Leave blank for all devices'),
+                            Select::make('device_id')
+                                ->label('Select Device')
+                                ->options(Device::all()->mapWithKeys(fn ($d) => [$d->id => $d->name ?: $d->serial_number])->toArray())
+                                ->required(),
                         ])
-                        ->action(function (\Illuminate\Database\Eloquent\Collection $records, array $data) {
-                            $location = '';
-                            if (!empty($data['location'])) {
-                                $location = is_array($data['location']) ? implode(',', $data['location']) : $data['location'];
+                        ->action(function (Collection $records, array $data) {
+                            $device = Device::find($data['device_id']);
+
+                            if ($device) {
+                                $count = 0;
+                                foreach ($records as $record) {
+                                    app(DeviceCommandBuilder::class)->deleteUser($device, $record->pin);
+                                    $count++;
+                                }
+
+                                Notification::make()
+                                    ->title('Commands queued')
+                                    ->body("{$count} users will be deleted from the device shortly.")
+                                    ->success()
+                                    ->send();
                             }
-                            
-                            $organisation = tenancy()->tenant;
-                            $count = 0;
-                            
-                            foreach ($records as $record) {
-                                \App\Jobs\DeleteEbioUserJob::dispatch($organisation, $record->pin, $location);
-                                $count++;
-                            }
-                            
-                            \Filament\Notifications\Notification::make()
-                                ->title('Deletion Queued')
-                                ->body("{$count} user deletions queued.")
-                                ->success()
-                                ->send();
                         })
                         ->deselectRecordsAfterCompletion(),
-                    \Filament\Actions\BulkAction::make('assignCategory')
+                    BulkAction::make('assignCategory')
                         ->label('Assign Category')
                         ->icon('heroicon-o-tag')
                         ->form([
-                            \Filament\Forms\Components\Select::make('branch_id')
+                            Select::make('branch_id')
                                 ->label('Branch')
-                                ->options(\App\Models\Branch::all()->pluck('display_name', 'id'))
-                                ->default(fn () => \App\Models\Branch::count() === 1 ? \App\Models\Branch::first()->id : null)
+                                ->options(Branch::all()->pluck('display_name', 'id'))
+                                ->default(fn () => Branch::count() === 1 ? Branch::first()->id : null)
                                 ->live()
                                 ->nullable(),
-                            \Filament\Forms\Components\Select::make('department_id')
+                            Select::make('department_id')
                                 ->label('Department')
                                 ->options(function ($get) {
                                     $branchId = $get('branch_id');
-                                    if (!$branchId) {
-                                        return \App\Models\Department::pluck('name', 'id');
+                                    if (! $branchId) {
+                                        return Department::pluck('name', 'id');
                                     }
-                                    return \App\Models\Department::whereHas('branches', fn ($q) => $q->where('branches.id', $branchId))->pluck('name', 'id');
+
+                                    return Department::whereHas('branches', fn ($q) => $q->where('branches.id', $branchId))->pluck('name', 'id');
                                 })
-                                ->default(fn () => \App\Models\Department::count() === 1 ? \App\Models\Department::first()->id : null)
+                                ->default(fn () => Department::count() === 1 ? Department::first()->id : null)
                                 ->nullable(),
-                            \Filament\Forms\Components\Select::make('group')
+                            Select::make('group')
                                 ->label('Designation / Group')
-                                ->options(\App\Models\User::whereNotNull('group')->where('group', '!=', '')->distinct()->pluck('group', 'group'))
+                                ->options(User::whereNotNull('group')->where('group', '!=', '')->distinct()->pluck('group', 'group'))
                                 ->searchable()
                                 ->createOptionForm([
-                                    \Filament\Forms\Components\TextInput::make('name')->required()->label('Name'),
+                                    TextInput::make('name')->required()->label('Name'),
                                 ])
                                 ->createOptionUsing(fn (array $data) => $data['name'])
                                 ->nullable(),
-                            \Filament\Forms\Components\Select::make('taskGroups')
+                            Select::make('taskGroups')
                                 ->label('Task Groups')
                                 ->multiple()
-                                ->options(\App\Models\TaskGroup::pluck('name', 'id'))
+                                ->options(TaskGroup::pluck('name', 'id'))
                                 ->searchable()
-                                ->default(fn () => \App\Models\TaskGroup::count() === 1 ? [\App\Models\TaskGroup::first()->id] : [])
+                                ->default(fn () => TaskGroup::count() === 1 ? [TaskGroup::first()->id] : [])
                                 ->createOptionForm([
-                                    \Filament\Forms\Components\TextInput::make('name')->required(),
-                                    \Filament\Forms\Components\Textarea::make('description'),
+                                    TextInput::make('name')->required(),
+                                    Textarea::make('description'),
                                 ])
                                 ->createOptionUsing(function (array $data) {
-                                    $taskGroup = \App\Models\TaskGroup::create($data);
+                                    $taskGroup = TaskGroup::create($data);
+
                                     return $taskGroup->id;
                                 })
                                 ->nullable(),
                         ])
-                        ->action(function (\Illuminate\Database\Eloquent\Collection $records, array $data) {
+                        ->action(function (Collection $records, array $data) {
                             $updateData = [];
                             if (array_key_exists('branch_id', $data) && $data['branch_id'] !== null) {
                                 $updateData['branch_id'] = $data['branch_id'];
@@ -545,20 +446,20 @@ class UserResource extends Resource
                             if (array_key_exists('group', $data) && $data['group'] !== null) {
                                 $updateData['group'] = $data['group'];
                             }
-                            
-                            if (!empty($updateData)) {
+
+                            if (! empty($updateData)) {
                                 foreach ($records as $record) {
                                     $record->update($updateData);
                                 }
                             }
 
-                            if (!empty($data['taskGroups'])) {
+                            if (! empty($data['taskGroups'])) {
                                 foreach ($records as $record) {
                                     $record->taskGroups()->syncWithoutDetaching($data['taskGroups']);
                                 }
                             }
-                            
-                            \Filament\Notifications\Notification::make()
+
+                            Notification::make()
                                 ->title('Success')
                                 ->body('Categories assigned to selected users.')
                                 ->success()

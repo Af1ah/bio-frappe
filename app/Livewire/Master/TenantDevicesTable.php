@@ -14,7 +14,7 @@ use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
 use Livewire\Component;
 
-class TenantDevicesTable extends Component implements HasForms, HasTable, HasActions
+class TenantDevicesTable extends Component implements HasActions, HasForms, HasTable
 {
     use InteractsWithActions;
     use InteractsWithForms;
@@ -24,59 +24,20 @@ class TenantDevicesTable extends Component implements HasForms, HasTable, HasAct
 
     public function table(Table $table): Table
     {
-        // Initialize tenant context for multi-db
         tenancy()->initialize($this->organisation);
 
         return $table
-            ->headerActions([
-                \Filament\Actions\Action::make('syncEbioDevices')
-                    ->label('Sync from eBioServer')
-                    ->icon('heroicon-o-arrow-path')
-                    ->color('warning')
-                    ->requiresConfirmation()
-                    ->modalHeading('Sync Devices from eBioServer')
-                    ->action(function () {
-                        try {
-                            $service = new \App\Services\EbioSoapService();
-                            $result = $service->syncDevices($this->organisation);
-                            
-                            \Filament\Notifications\Notification::make()
-                                ->title('Sync Complete')
-                                ->body("Successfully synced {$result['synced']} devices.")
-                                ->success()
-                                ->send();
-                        } catch (\Exception $e) {
-                            \Filament\Notifications\Notification::make()
-                                ->title('Sync Failed')
-                                ->body($e->getMessage())
-                                ->danger()
-                                ->send();
-                        }
-                    })
-            ])
             ->query(Device::query())
             ->columns([
                 TextColumn::make('serial_number'),
                 TextColumn::make('name'),
-                TextColumn::make('options.location')
-                    ->label('Location')
-                    ->placeholder('-'),
+                TextColumn::make('vendor')->badge(),
                 TextColumn::make('status')
                     ->badge()
                     ->getStateUsing(fn (Device $record): string => $record->isOnline() ? 'online' : 'offline')
-                    ->color(fn (string $state): string => match ($state) {
-                        'online' => 'success',
-                        'offline' => 'danger',
-                        default => 'warning',
-                    }),
-                TextColumn::make('last_activity_at')
-                    ->label('Last Ping')
-                    ->dateTime()
-                    ->placeholder('-'),
-                TextColumn::make('last_sync_at')
-                    ->label('Last Sync')
-                    ->dateTime()
-                    ->placeholder('-'),
+                    ->color(fn (string $state): string => $state === 'online' ? 'success' : 'danger'),
+                TextColumn::make('last_activity_at')->label('Last activity')->dateTime()->placeholder('-'),
+                TextColumn::make('last_sync_at')->label('Last sync')->dateTime()->placeholder('-'),
             ]);
     }
 

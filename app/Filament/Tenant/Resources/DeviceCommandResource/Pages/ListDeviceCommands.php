@@ -2,9 +2,14 @@
 
 namespace App\Filament\Tenant\Resources\DeviceCommandResource\Pages;
 
-use Filament\Actions;
-use Filament\Resources\Pages\ListRecords;
 use App\Filament\Tenant\Resources\DeviceCommandResource;
+use App\Models\Device;
+use App\Services\Attendance\DeviceCommandBuilder;
+use Filament\Actions;
+use Filament\Forms\Components\Select;
+use Filament\Forms\Components\TextInput;
+use Filament\Notifications\Notification;
+use Filament\Resources\Pages\ListRecords;
 
 class ListDeviceCommands extends ListRecords
 {
@@ -18,29 +23,55 @@ class ListDeviceCommands extends ListRecords
                 ->icon('heroicon-o-command-line')
                 ->color('primary')
                 ->form([
-                    \Filament\Forms\Components\Select::make('device_id')
+                    Select::make('device_id')
                         ->label('Select Device')
                         ->options(function () {
-                            return \App\Models\Device::all()->mapWithKeys(function ($d) {
+                            return Device::all()->mapWithKeys(function ($d) {
                                 return [$d->id => $d->name ?: $d->serial_number];
                             });
                         })
                         ->required()
                         ->live()
                         ->afterStateUpdated(fn (callable $set) => $set('command', null))
-                        ->default(fn () => \App\Models\Device::count() === 1 ? \App\Models\Device::first()->id : null),
-                        \Filament\Forms\Components\Select::make('command')
+                        ->default(fn () => Device::count() === 1 ? Device::first()->id : null),
+                    Select::make('command')
                         ->label('Select Command')
                         ->live()
-                        ->options([
-                            'reboot' => 'Reboot Device',
-                            'clear_logs' => 'CRITICAL: Clear Attendance Logs',
-                            'reset_transaction_stamp' => 'Reset Transaction Stamp',
-                            'reset_op_stamp' => 'Reset OP Stamp',
-                            'unlock_door' => 'Unlock Door',
-                        ])
+                        ->options(function (callable $get) {
+                            $deviceId = $get('device_id');
+                            $options = [
+                                'info' => 'Get Device Info',
+                                'reboot' => 'Reboot Device',
+                                'checkConnection' => 'Check Connection',
+                                'syncTime' => 'Sync Time',
+                                'queryAllUsers' => 'Pull All Users',
+                                'queryAllFingerprints' => 'Pull All Fingerprints',
+                                'queryAttendanceLogs' => 'Pull All Attendance Logs (Recovery)',
+                                'clearAttendanceLogs' => 'CRITICAL: Clear Attendance Logs',
+                                'clearUsers' => 'CRITICAL: Clear All Users',
+                                'clearAllData' => 'CRITICAL: Clear All Data (Hard Reset)',
+                            ];
+
+                            if ($deviceId) {
+                                $device = Device::find($deviceId);
+                                if ($device && $device->vendor === 'hikvision') {
+                                    return [
+                                        'queryAllUsers' => 'Pull All Users',
+                                        'reboot' => 'Reboot Device',
+                                    ];
+                                } elseif ($device && $device->vendor === 'matrix') {
+                                    return [
+                                        'info' => 'Get Device Info',
+                                        'checkConnection' => 'Check Connection',
+                                        'queryAllUsers' => 'Pull All Users (Counts)',
+                                    ];
+                                }
+                            }
+
+                            return $options;
+                        })
                         ->required(),
-                    \Filament\Forms\Components\TextInput::make('confirm')
+                    TextInput::make('confirm')
                         ->label("Type 'CONFIRM' to execute this command")
                         ->required()
                         ->rule(function () {
@@ -50,26 +81,28 @@ class ListDeviceCommands extends ListRecords
                                 }
                             };
                         })
-                        ->hidden(fn ($get) => !in_array($get('command'), ['clear_logs', 'reboot'])),
+                        ->hidden(fn ($get) => ! in_array($get('command'), ['clearAttendanceLogs', 'clearUsers', 'clearAllData', 'reboot'])),
                 ])
                 ->action(function (array $data) {
-                    $device = \App\Models\Device::find($data['device_id']);
-                    if (!$device) return;
+                    $device = Device::find($data['device_id']);
+                    if (! $device) {
+                        return;
+                    }
 
-                    $command = \App\Models\DeviceCommand::create([
-                        'device_id' => $device->id,
-                        'command_type' => $data['command'],
-                        'command_content' => "eBioServer SOAP Command: {$data['command']}",
-                        'status' => 'pending',
-                    ]);
+                    $builder = app(DeviceCommandBuilder::class);
+                    $commandMethod = $data['command'];
 
-                    \App\Jobs\EbioDeviceCommandJob::dispatch(tenant(), $device->serial_number, $data['command'], $command->id);
-                    
-                    \Filament\Notifications\Notification::make()
-                        ->title('Command Queued')
-                        ->body("The '{$data['command']}' command has been queued for sync.")
-                        ->success()
-                        ->send();
+                    if (method_exists($builder, $commandMethod)) {
+                        $builder->$commandMethod($device);
+
+                        Notification::make()
+                            ->title($device->vendor === 'matrix' ? 'Command Sent' : 'Command Queued')
+                            ->body($device->vendor === 'matrix'
+                                ? "The '{$data['command']}' command was sent directly to the Matrix device. Check its status below."
+                                : "The '{$data['command']}' command will be executed on the next device poll.")
+                            ->success()
+                            ->send();
+                    }
                 }),
             Actions\CreateAction::make(),
         ];

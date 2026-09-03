@@ -75,7 +75,7 @@ setCatchHandler(async ({ request, url }) => {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Offline - BIO-Notifier</title>
+    <title>Offline - Biomatrix</title>
     <style>
         body { font-family: system-ui, -apple-system, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; background-color: #f3f4f6; color: #1f2937; text-align: center; padding: 1rem; }
         .icon { width: 64px; height: 64px; color: #9ca3af; margin-bottom: 1rem; }

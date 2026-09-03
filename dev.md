@@ -1,6 +1,6 @@
 # Development Guide: Toggling Tenancy Modes
 
-Bio-Notifier currently supports two routing methods for multi-tenancy:
+Biomatrix currently supports two routing methods for multi-tenancy:
 1. **Path-Based Routing** (e.g., `noti.ariise.cloud/tenant1/admin`) - *Currently Active*
 2. **Domain-Based Routing** (e.g., `tenant1.noti.ariise.cloud/admin`) - *Commented Out*
 

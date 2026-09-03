@@ -1,77 +1,31 @@
-# Bio-Notifier
+# Biomatrix
 
-Bio-Notifier is a powerful, modern, multi-tenant middleware designed to seamlessly bridge the gap between physical biometric attendance hardware (eSSL / eBio Server) and real-time communication platforms. 
+Biomatrix is a multi-tenant Laravel application for direct biometric-device attendance management. It is the Matrix companion tool and supports ZKTeco ADMS polling, Matrix COSEC HTTP devices, and Hikvision ISAPI devices.
 
-Built on Laravel and the Filament admin panel, it acts as a centralized notification engine that intercepts attendance punches and instantly alerts employees via WhatsApp. Furthermore, it aggregates this data to compile comprehensive attendance reports.
+## Device connectivity
 
-## 🚀 Key Features
+- ZKTeco devices call the ADMS endpoints under `/iclock`. The application identifies the tenant by device serial number and queues incoming attendance payloads.
+- Matrix COSEC devices are managed through their HTTP API and can use the Matrix push endpoints at `/login` and `/matrix/*`.
+- Hikvision devices use ISAPI through the `shaykhnazar/hikvision-isapi` package.
+- User profiles and fingerprint templates are transferred using device commands. Select users in the tenant panel and use **Push to Device** to choose profile data and biometric templates.
 
-### 💬 Real-Time WhatsApp Notifications (WAHA API)
-- **eSSL / eBio Server Integration:** Captures real-time attendance webhooks pushed directly from eSSL and eBio Servers.
-- **Instant Alerts:** Automatically triggers WhatsApp messages to employees the moment they punch in or punch out on the biometric device.
-- **WAHA API Support:** Fully integrated with the WhatsApp HTTP API (WAHA) for stable, session-based messaging.
+## Local setup
 
-### 📊 Report Compilation & Analytics
-- **Comprehensive Reporting Dashboard:** Database-driven, highly configurable reporting system.
-- **Automated Compilations:** Generates attendance reports including working hours, present/absent statistics, and late marks.
-- **Filament Integration:** Data visualizations and tables built natively into the beautiful Filament admin dashboard.
+```bash
+composer install
+cp .env.example .env
+php artisan key:generate
+php artisan migrate
+npm install
+npm run build
+```
 
-### 🏢 Multi-Tenancy Architecture (Subdomain Routing)
-- Robust multi-tenant environment powered by `stancl/tenancy` ensuring complete PostgreSQL database isolation.
-- **Automated Subdomain Provisioning:** Instantly spins up a new isolated domain (e.g., `company.bionotifier.com/admin`) upon company creation.
-- **Zero Cross-Data Bleed:** Central Master Admin panel and Tenant Admin panels operate on completely decoupled routing networks.
+Use a queue worker for received attendance payloads and direct-device command jobs:
 
-### 🔌 Hardware Integration & Full SOAP Device Sync
-- **eBio Server Webhooks (Fire & Forget):** Asynchronous queue-based architecture capable of handling thousands of simultaneous device pings in <10ms to prevent device lockups.
-- **Biometric Pushing & Pulling:** Push employee details to devices natively.
-- **Advanced Device Commands:** Supports deleting users from specific devices, setting employee expiration dates, and triggering remote device fetches/reboots via SOAP API integration.
-- **Biometric Face & Fingerprint Uploads:** Support for extracting and syncing Base64 biometric templates (Face ID & Fingerprints) across mixed hardware.
-- **ZKTeco / Hikvision / Matrix Support:** Direct fallback integration capabilities for pushing user data back to legacy hardware.
+```bash
+php artisan queue:work
+```
 
-## 🛠️ Technology Stack
-- **Framework:** [Laravel](https://laravel.com/) (PHP 8.2+)
-- **Admin Interface:** [Filament v3/v4](https://filamentphp.com/)
-- **Multi-Tenancy:** [Stancl/Tenancy](https://tenancyforlaravel.com/)
-- **Database:** PostgreSQL (with schema isolation) / MySQL
-- **WhatsApp API:** WAHA (WhatsApp HTTP API)
+## Upgrading from the eBio build
 
-## ⚙️ Setup & Installation
-
-For production deployments, please refer to the detailed [Deploy.md](./Deploy.md) guide included in this repository. 
-For a complete architectural overview and implementation guidelines, refer to the [Guide.md](./Guide.md) file.
-
-### Local Development (via Docker/Sail)
-
-Docker support has been added to the project via Laravel Sail.
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/Af1ah/bio-notifier.git bio-notifier
-   cd bio-notifier
-   ```
-
-2. **Install Composer Dependencies:**
-   ```bash
-   docker run --rm \
-       -u "$(id -u):$(id -g)" \
-       -v "$(pwd):/var/www/html" \
-       -w /var/www/html \
-       laravelsail/php82-composer:latest \
-       composer install --ignore-platform-reqs
-   ```
-
-3. **Configure Environment:**
-   ```bash
-   cp .env.example .env
-   # Make sure to update WHATSAPP_API_KEY and WHATSAPP_INSTANCE_NAME
-   ```
-
-4. **Start the Environment & Run Migrations:**
-   ```bash
-   ./vendor/bin/sail up -d
-   ./vendor/bin/sail artisan key:generate
-   ./vendor/bin/sail artisan migrate
-   ```
-
-## 📝 License
-This project is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+Run migrations after deployment. The cleanup migration removes the retired eBio credential columns from the central organisations table. eBio SOAP jobs and webhook endpoints are no longer part of the application.

@@ -16,6 +16,7 @@
         "laravel/sanctum": "^4.0",
         "laravel/tinker": "^2.10.1",
         "rats/zkteco": "^002.0",
+        "shaykhnazar/hikvision-isapi": "^1.6",
         "stancl/tenancy": "*"
     },
     "require-dev": {

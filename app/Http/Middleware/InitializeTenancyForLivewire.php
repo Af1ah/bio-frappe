@@ -24,17 +24,18 @@ class InitializeTenancyForLivewire
                 }
             }
 
-            // 2. Try Path-based tenancy (fallback for localhost or central domain)
+            // 2. Try the Livewire component snapshot. Unlike Referer, this remains
+            // available for SPA navigation and for POST /livewire/update requests.
+            if (!$tenant) {
+                $snapshot = json_decode((string) data_get($request->input('components'), '0.snapshot'), true);
+                $tenant = $this->tenantFromPath(data_get($snapshot, 'memo.path'));
+            }
+
+            // 3. Fall back to the browser URL for regular Livewire requests.
             if (!$tenant) {
                 $referer = $request->header('referer');
                 if ($referer) {
-                    $path = parse_url($referer, PHP_URL_PATH);
-                    // e.g. /secumax/admin -> secumax
-                    $pathParts = explode('/', trim($path, '/'));
-                    if (count($pathParts) > 0 && $pathParts[0] !== 'master' && $pathParts[0] !== 'livewire') {
-                        $shortname = $pathParts[0];
-                        $tenant = \App\Models\Organisation::where('shortname', $shortname)->first();
-                    }
+                    $tenant = $this->tenantFromPath(parse_url($referer, PHP_URL_PATH));
                 }
             }
             
@@ -59,5 +60,20 @@ class InitializeTenancyForLivewire
         }
 
         return $next($request);
+    }
+
+    private function tenantFromPath(?string $path): ?Organisation
+    {
+        if (!$path) {
+            return null;
+        }
+
+        $shortname = explode('/', trim($path, '/'))[0] ?? null;
+
+        if (!$shortname || in_array($shortname, ['master', 'livewire'])) {
+            return null;
+        }
+
+        return Organisation::where('shortname', $shortname)->first();
     }
 }

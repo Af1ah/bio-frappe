@@ -1,35 +1,25 @@
-# Bio-Notifier Development Agenda & Quick Reference
+# Biomatrix Development Reference
 
-## 1. Project Overview
-**Bio-Notifier** is a multi-tenant Laravel 12 application using Filament v3 for administration. It manages biometric attendance devices, synchronizes users/fingerprints/faces, and triggers notifications (e.g., WAHA WhatsApp API) based on real-time attendance logs.
+## Project
 
-## 2. Tech Stack & Versions
-* **PHP:** 8.5.x
-* **Laravel:** 12.64.0
-* **Admin Panel:** Filament v3 (Livewire 3.x)
-* **Database:** PostgreSQL (Multi-tenant architecture)
-* **Biometric Middleware:** eBioServer New (SOAP API 1.1)
+Biomatrix is a multi-tenant Laravel 12 and Filament application that manages biometric attendance devices directly. It is the companion tool for Matrix and supports ZKTeco ADMS, Matrix COSEC, and Hikvision devices.
 
-## 3. Core Architecture & Standards
-* **Multi-Tenancy:** The application is tenant-aware. Always initialize tenancy in background queue jobs using `tenancy()->initialize($this->organisation);` before querying any tenant-specific models.
-* **Legacy vs. New API:** The legacy ADMS direct integration (`DeviceCommandBuilder`) is **DEPRECATED**. All device communication MUST use the new eBioServer SOAP architecture via `app/Services/EbioSoapService.php`.
-* **SOAP Communication Rules:**
-  * **Method:** Always use `Http::send('POST', $url, ['body' => $xml])`. **NEVER** use `Http::post($url, $string)` as it alters the payload to `application/x-www-form-urlencoded`, which the eBioServer rejects.
-  * **Headers:** Always include `'Content-Type' => 'text/xml; charset=utf-8'` and the appropriate `'SOAPAction'`.
-  * **Identifiers:** The eBioServer `EmployeeCode` maps exactly to the `pin` attribute on the `User` model (`$user->pin`).
-  * **URL Construction:** Target `$url = rtrim($organisation->ebio_url, '/') . '/webservice.asmx';`
+## Direct-device architecture
 
-## 4. Key Variables & Credentials
-When interacting with the eBioServer, always rely on these `Organisation` model properties:
-* `ebio_url`: The base URL for the server (e.g., `http://20.198.121.193:40010/iclock`).
-* `ebio_soap_username`: Authentication username for the SOAP payload.
-* `ebio_soap_password`: Authentication password for the SOAP payload.
+- **ZKTeco ADMS:** Devices poll `/iclock/cdata`, `/iclock/getrequest`, and `/iclock/devicecmd`. Tenant resolution is performed by serial number in `IdentifyTenantByDeviceSN`.
+- **Matrix COSEC:** HTTP actions are handled by `ProcessMatrixCommand`; the device push endpoints are `/login` and `/matrix/*`.
+- **Hikvision:** ISAPI actions are handled by `ProcessHikvisionCommand`.
+- **Commands:** Create device commands with `app/Services/Attendance/DeviceCommandBuilder.php`. Its methods represent the shared user, fingerprint, sync, cleanup, and device-control commands.
+- **Biometric templates:** The `fingerprints` JSON field stores templates. Pull users from a device to capture templates, then select **Push to Device** in the Users table to distribute profiles and fingerprints.
 
-## 5. Where to Find Things
-* **Device Communication Logic:** `app/Services/EbioSoapService.php` (SOAP XML generation & HTTP requests).
-* **Background Jobs:** `app/Jobs/` (e.g., `EbioDeviceCommandJob`, `EnrollEbioBiometricJob`). Ensure tenant initialization is at the top of the `handle()` method.
-* **Filament UI/Actions:** `app/Filament/Tenant/Resources/`
-  * `DeviceResource`: Device management and direct actions (reboot, clear logs).
-  * `UserResource`: User sync, biometric enrollment (finger/face), door blocking.
-  * `DeviceCommandResource`: Command queuing and history tracking.
-* **API Documentation:** The official SOAP API documentation is located at `reference/eBioServerNew-Web_API-Manual.txt`. Always consult this before writing new SOAP actions.
+## Multi-tenancy
+
+Initialize tenancy in every queued job before accessing tenant models. Device polling middleware selects the tenant before the controller executes. Ensure new device operations work from an initialized tenant database.
+
+## Key paths
+
+- Device UI: `app/Filament/Tenant/Resources/DeviceResource.php`
+- User creation, import and profile/biometric push: `app/Filament/Tenant/Resources/UserResource.php`
+- Direct device service: `app/Services/Attendance/DirectDeviceService.php`
+- Command builder: `app/Services/Attendance/DeviceCommandBuilder.php`
+- ADMS controllers: `app/Http/Controllers/Api/Attendance/`

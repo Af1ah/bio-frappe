@@ -2,6 +2,10 @@
 
 namespace App\Filament\Tenant\Resources;
 
+use App\Filament\Tenant\Resources\DeviceResource\Pages;
+use App\Filament\Tenant\Resources\DeviceResource\RelationManagers;
+use App\Models\Device;
+use App\Services\Attendance\DeviceCommandBuilder;
 use Filament\Actions\Action;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
@@ -9,21 +13,21 @@ use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
+use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Filament\Tables;
 use Filament\Tables\Table;
-use App\Filament\Tenant\Resources\DeviceResource\Pages;
-use App\Filament\Tenant\Resources\DeviceResource\RelationManagers;
-
-use App\Models\Device;
+use Illuminate\Support\Facades\Http;
+use Shaykhnazar\HikvisionIsapi\Facades\Hikvision;
+use Shaykhnazar\HikvisionIsapi\Services\DeviceService;
 
 class DeviceResource extends Resource
 {
     protected static ?string $model = Device::class;
 
-    protected static string | \BackedEnum | null $navigationIcon = 'heroicon-o-cpu-chip';
+    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-cpu-chip';
 
     protected static ?int $navigationSort = 1;
 
@@ -31,31 +35,72 @@ class DeviceResource extends Resource
 
     //
 
-    public static function canCreate(): bool
-    {
-        return true;
-    }
-
-    public static function canEdit(\Illuminate\Database\Eloquent\Model $record): bool
-    {
-        return false;
-    }
-
-    public static function canDelete(\Illuminate\Database\Eloquent\Model $record): bool
-    {
-        return false;
-    }
-
-    public static function infolist(Schema $schema): Schema
+    public static function form(Schema $schema): Schema
     {
         return $schema->components([
-            \Filament\Infolists\Components\TextEntry::make('serial_number'),
-            \Filament\Infolists\Components\TextEntry::make('name'),
-            \Filament\Infolists\Components\TextEntry::make('options.location')
-                ->label('Location'),
-            \Filament\Infolists\Components\TextEntry::make('last_activity_at')
-                ->label('Last Ping')
-                ->dateTime(),
+            Section::make('Device Information')
+                ->schema([
+                    Select::make('vendor')
+                        ->options([
+                            'zkteco' => 'ZKTeco (ADMS)',
+                            'hikvision' => 'Hikvision (ISAPI)',
+                            'matrix' => 'Matrix (COSEC)',
+                        ])
+                        ->default('zkteco')
+                        ->live()
+                        ->afterStateUpdated(fn ($state, callable $set) => in_array($state, ['hikvision', 'matrix']) ? $set('serial_number', null) : null),
+                    TextInput::make('serial_number')
+                        ->required(fn ($get) => $get('vendor') === 'zkteco')
+                        ->unique(ignoreRecord: true)
+                        ->maxLength(100),
+                    TextInput::make('ip_address')
+                        ->label('IP Address'),
+                    TextInput::make('username')
+                        ->visible(fn ($get) => in_array($get('vendor'), ['hikvision', 'matrix']))
+                        ->required(fn ($get) => in_array($get('vendor'), ['hikvision', 'matrix'])),
+                    TextInput::make('password')
+                        ->password()
+                        ->visible(fn ($get) => in_array($get('vendor'), ['hikvision', 'matrix']))
+                        ->required(fn ($get) => in_array($get('vendor'), ['hikvision', 'matrix'])),
+                    TextInput::make('port')
+                        ->numeric()
+                        ->default(80)
+                        ->visible(fn ($get) => in_array($get('vendor'), ['hikvision', 'matrix'])),
+                    Select::make('protocol')
+                        ->options(['http' => 'HTTP', 'https' => 'HTTPS'])
+                        ->default('http')
+                        ->visible(fn ($get) => in_array($get('vendor'), ['hikvision', 'matrix'])),
+                    TextInput::make('name')
+                        ->maxLength(255),
+                    Select::make('branch_id')
+                        ->relationship('branch', 'name')
+                        ->searchable()
+                        ->preload(),
+                    TextInput::make('model')
+                        ->disabled(fn ($get) => in_array($get('vendor'), ['hikvision', 'matrix'])),
+                    TextInput::make('firmware_version')
+                        ->disabled(),
+                    TextInput::make('push_version')
+                        ->disabled(fn ($get) => in_array($get('vendor'), ['hikvision', 'matrix'])),
+                    Select::make('status')
+                        ->options([
+                            'online' => 'Online',
+                            'offline' => 'Offline',
+                            'unknown' => 'Unknown',
+                        ])
+                        ->default('unknown'),
+                    Select::make('punch_behavior')
+                        ->options([
+                            'device_state' => 'Device State (Default)',
+                            'always_in' => 'Always In',
+                            'always_out' => 'Always Out',
+                            'auto' => 'Auto (Alternating)',
+                        ])
+                        ->default('device_state')
+                        ->helperText('Determines if logs from this device are Check-In, Check-Out, or handled automatically.'),
+                ])
+                ->columns(2)
+                ->columnSpanFull(),
         ]);
     }
 
@@ -65,14 +110,11 @@ class DeviceResource extends Resource
             ->columns([
                 Tables\Columns\TextColumn::make('serial_number')
                     ->searchable()
-                    ->sortable()
-                    ->visibleFrom('md'),
+                    ->sortable(),
                 Tables\Columns\TextColumn::make('name')
                     ->searchable(),
-                Tables\Columns\TextColumn::make('options.location')
-                    ->label('Location')
-                    ->searchable()
-                    ->toggleable(),
+                Tables\Columns\TextColumn::make('ip_address')
+                    ->label('IP Address'),
                 Tables\Columns\TextColumn::make('status')
                     ->badge()
                     ->getStateUsing(fn (Device $record): string => $record->isOnline() ? 'online' : 'offline')
@@ -80,21 +122,14 @@ class DeviceResource extends Resource
                         'online' => 'success',
                         'offline' => 'danger',
                         default => 'warning',
-                    })
-                    ->visibleFrom('md'),
+                    }),
                 Tables\Columns\TextColumn::make('last_activity_at')
-                    ->label('Last Ping')
-                    ->date('M j, Y')
-                    ->description(fn (Device $record): ?string => $record->last_activity_at?->format('H:i:s'))
-                    ->sortable()
-                    ->toggleable(),
-                Tables\Columns\TextColumn::make('last_sync_at')
-                    ->label('Last Sync')
-                    ->date('M j, Y')
-                    ->description(fn (Device $record): ?string => $record->last_sync_at?->format('H:i:s'))
-                    ->sortable()
-                    ->toggleable()
-                    ->visibleFrom('md'),
+                    ->label('Last Activity')
+                    ->dateTime()
+                    ->sortable(),
+                Tables\Columns\TextColumn::make('attendance_logs_count')
+                    ->counts('attendanceLogs')
+                    ->label('Logs'),
             ])
             ->filters([
                 Tables\Filters\SelectFilter::make('status')
@@ -105,108 +140,172 @@ class DeviceResource extends Resource
                     ]),
             ])
             ->recordActions([
-                \Filament\Actions\ActionGroup::make([
-                    ViewAction::make(),
-                    \Filament\Actions\Action::make('reboot')
-                        ->label('Reboot Device')
-                        ->icon('heroicon-o-power')
-                        ->requiresConfirmation()
-                        ->action(function (Device $record) {
-                            $command = \App\Models\DeviceCommand::create([
-                                'device_id' => $record->id,
-                                'command_type' => 'reboot',
-                                'command_content' => 'eBioServer SOAP Command: reboot',
-                                'status' => 'pending',
+                ViewAction::make(),
+                EditAction::make(),
+                Action::make('getInfo')
+                    ->icon('heroicon-o-information-circle')
+                    ->color('info')
+                    ->requiresConfirmation()
+                    ->modalHeading('Get Device Info')
+                    ->modalDescription('Send a command to get device information.')
+                    ->action(fn (Device $record) => app(DeviceCommandBuilder::class)->info($record)),
+                Action::make('reboot')
+                    ->icon('heroicon-o-arrow-path')
+                    ->color('warning')
+                    ->requiresConfirmation()
+                    ->modalHeading('Reboot Device')
+                    ->modalDescription('Are you sure you want to reboot this device?')
+                    ->visible(fn (Device $record) => $record->vendor !== 'matrix')
+                    ->action(fn (Device $record) => app(DeviceCommandBuilder::class)->reboot($record)),
+                Action::make('clearLogs')
+                    ->icon('heroicon-o-trash')
+                    ->color('danger')
+                    ->requiresConfirmation()
+                    ->modalHeading('Clear Device Logs')
+                    ->modalDescription('Are you sure you want to clear all attendance logs on this device?')
+                    ->action(fn (Device $record) => app(DeviceCommandBuilder::class)->clearAttendanceLogs($record)),
+                Action::make('checkConnection')
+                    ->label('Check ADMS Connection')
+                    ->icon('heroicon-o-wifi')
+                    ->color('info')
+                    ->visible(fn (Device $record) => $record->vendor === 'zkteco' || empty($record->vendor))
+                    ->requiresConfirmation()
+                    ->modalHeading('Check Connection')
+                    ->modalDescription('This will queue a CHECK command. The device should process it on its next poll.')
+                    ->action(function (Device $record) {
+                        app(DeviceCommandBuilder::class)->checkConnection($record);
+                        Notification::make()->title('Command Queued')->body('Check connection command queued successfully.')->success()->send();
+                    }),
+                Action::make('hikvisionStatus')
+                    ->label('Check ISAPI Status')
+                    ->icon('heroicon-o-signal')
+                    ->color('success')
+                    ->visible(fn (Device $record) => $record->vendor === 'hikvision')
+                    ->action(function (Device $record) {
+                        try {
+                            Hikvision::registerDevice('device_'.$record->id, [
+                                'ip' => $record->ip_address,
+                                'port' => $record->port ?? 80,
+                                'username' => $record->username,
+                                'password' => $record->password,
+                                'protocol' => $record->protocol ?? 'http',
+                                'timeout' => 5,
+                                'verify_ssl' => false,
                             ]);
-                            \App\Jobs\EbioDeviceCommandJob::dispatch(tenancy()->tenant, $record->serial_number, 'reboot', $command->id);
-                            \Filament\Notifications\Notification::make()
-                                ->title('Command Queued')
-                                ->body('Reboot command queued.')
-                                ->success()
+                            $client = Hikvision::device('device_'.$record->id);
+                            $deviceService = new DeviceService($client);
+
+                            if ($deviceService->isOnline()) {
+                                $info = $deviceService->getInfo();
+
+                                // Auto update model/firmware on success
+                                $model = $info['DeviceInfo']['model'] ?? 'Unknown';
+                                $fw = $info['DeviceInfo']['firmwareVersion'] ?? 'Unknown';
+
+                                $record->update([
+                                    'status' => 'online',
+                                    'model' => $model,
+                                    'firmware_version' => $fw,
+                                    'last_activity_at' => now(),
+                                ]);
+
+                                Notification::make()
+                                    ->title('Device Online')
+                                    ->body("Model: {$model}\nFirmware: {$fw}")
+                                    ->success()
+                                    ->send();
+                            } else {
+                                $record->update(['status' => 'offline']);
+                                Notification::make()
+                                    ->title('Device Offline')
+                                    ->body('Device is not responding to ISAPI requests.')
+                                    ->warning()
+                                    ->send();
+                            }
+                        } catch (\Exception $e) {
+                            $record->update(['status' => 'offline']);
+                            Notification::make()
+                                ->title('Connection Failed')
+                                ->body($e->getMessage())
+                                ->danger()
                                 ->send();
-                        }),
-                    \Filament\Actions\Action::make('clearLogs')
-                        ->label('Clear Logs')
-                        ->icon('heroicon-o-trash')
-                        ->requiresConfirmation()
-                        ->color('danger')
-                        ->action(function (Device $record) {
-                            $command = \App\Models\DeviceCommand::create([
-                                'device_id' => $record->id,
-                                'command_type' => 'clear_logs',
-                                'command_content' => 'eBioServer SOAP Command: clear_logs',
-                                'status' => 'pending',
-                            ]);
-                            \App\Jobs\EbioDeviceCommandJob::dispatch(tenancy()->tenant, $record->serial_number, 'clear_logs', $command->id);
-                            \Filament\Notifications\Notification::make()
-                                ->title('Command Queued')
-                                ->body('Clear logs command queued.')
-                                ->success()
+                        }
+                    }),
+                Action::make('matrixStatus')
+                    ->label('Check Matrix API Status')
+                    ->icon('heroicon-o-signal')
+                    ->color('success')
+                    ->visible(fn (Device $record) => $record->vendor === 'matrix')
+                    ->action(function (Device $record) {
+                        try {
+                            $baseUrl = ($record->protocol ?? 'http').'://'.$record->ip_address.':'.($record->port ?? 80);
+                            $response = Http::withDigestAuth($record->username, $record->password)
+                                ->timeout(5)
+                                ->get($baseUrl.'/device.cgi/device-basic-config', [
+                                    'action' => 'get',
+                                    'format' => 'xml',
+                                ]);
+
+                            if ($response->successful()) {
+                                // Simple XML parsing
+                                $xml = simplexml_load_string($response->body());
+                                $model = 'Matrix COSEC';
+                                if ($xml && isset($xml->name)) {
+                                    $model = (string) $xml->name;
+                                }
+
+                                $record->update([
+                                    'status' => 'online',
+                                    'model' => $model,
+                                    'last_activity_at' => now(),
+                                ]);
+
+                                Notification::make()
+                                    ->title('Device Online')
+                                    ->body("Model: {$model}")
+                                    ->success()
+                                    ->send();
+                            } else {
+                                $record->update(['status' => 'offline']);
+                                Notification::make()
+                                    ->title('Device Offline')
+                                    ->body('Device returned error: '.$response->status())
+                                    ->warning()
+                                    ->send();
+                            }
+                        } catch (\Exception $e) {
+                            $record->update(['status' => 'offline']);
+                            Notification::make()
+                                ->title('Connection Failed')
+                                ->body($e->getMessage())
+                                ->danger()
                                 ->send();
-                        }),
-                    \Filament\Actions\Action::make('resetTransactionStamp')
-                        ->label('Reset Transaction Stamp')
-                        ->icon('heroicon-o-arrow-down-tray')
-                        ->requiresConfirmation()
-                        ->action(function (Device $record) {
-                            $command = \App\Models\DeviceCommand::create([
-                                'device_id' => $record->id,
-                                'command_type' => 'reset_transaction_stamp',
-                                'command_content' => 'eBioServer SOAP Command: reset_transaction_stamp',
-                                'status' => 'pending',
-                            ]);
-                            \App\Jobs\EbioDeviceCommandJob::dispatch(tenancy()->tenant, $record->serial_number, 'reset_transaction_stamp', $command->id);
-                            \Filament\Notifications\Notification::make()
-                                ->title('Command Queued')
-                                ->body('Reset transaction stamp command queued.')
-                                ->success()
-                                ->send();
-                        }),
-                    \Filament\Actions\Action::make('resetOPStamp')
-                        ->label('Reset OP Stamp')
-                        ->icon('heroicon-o-arrow-path')
-                        ->requiresConfirmation()
-                        ->action(function (Device $record) {
-                            $command = \App\Models\DeviceCommand::create([
-                                'device_id' => $record->id,
-                                'command_type' => 'reset_op_stamp',
-                                'command_content' => 'eBioServer SOAP Command: reset_op_stamp',
-                                'status' => 'pending',
-                            ]);
-                            \App\Jobs\EbioDeviceCommandJob::dispatch(tenancy()->tenant, $record->serial_number, 'reset_op_stamp', $command->id);
-                            \Filament\Notifications\Notification::make()
-                                ->title('Command Queued')
-                                ->body('Reset OP stamp command queued.')
-                                ->success()
-                                ->send();
-                        }),
-                    \Filament\Actions\Action::make('unlockDoor')
-                        ->label('Unlock Door')
-                        ->icon('heroicon-o-lock-open')
-                        ->requiresConfirmation()
-                        ->action(function (Device $record) {
-                            $command = \App\Models\DeviceCommand::create([
-                                'device_id' => $record->id,
-                                'command_type' => 'unlock_door',
-                                'command_content' => 'eBioServer SOAP Command: unlock_door',
-                                'status' => 'pending',
-                            ]);
-                            \App\Jobs\EbioDeviceCommandJob::dispatch(tenancy()->tenant, $record->serial_number, 'unlock_door', $command->id);
-                            \Filament\Notifications\Notification::make()
-                                ->title('Command Queued')
-                                ->body('Unlock door command queued.')
-                                ->success()
-                                ->send();
-                        }),
-                ])->icon('heroicon-m-ellipsis-vertical'),
+                        }
+                    }),
+                Action::make('syncTime')
+                    ->label('Sync Time')
+                    ->icon('heroicon-o-clock')
+                    ->color('primary')
+                    ->requiresConfirmation()
+                    ->modalHeading('Sync Device Time')
+                    ->modalDescription('Queue a command to sync the device time with the server time.')
+                    ->action(function (Device $record) {
+                        app(DeviceCommandBuilder::class)->syncTime($record);
+                        Notification::make()->title('Command Queued')->body('Time sync command queued successfully.')->success()->send();
+                    }),
             ])
-            ->toolbarActions([]);
+            ->toolbarActions([
+                BulkActionGroup::make([
+                    DeleteBulkAction::make(),
+                ]),
+            ]);
     }
 
     public static function getRelations(): array
     {
         return [
             RelationManagers\AttendanceLogsRelationManager::class,
+            RelationManagers\CommandsRelationManager::class,
         ];
     }
 
@@ -214,7 +313,9 @@ class DeviceResource extends Resource
     {
         return [
             'index' => Pages\ListDevices::route('/'),
+            'create' => Pages\CreateDevice::route('/create'),
             'view' => Pages\ViewDevice::route('/{record}'),
+            'edit' => Pages\EditDevice::route('/{record}/edit'),
         ];
     }
 }

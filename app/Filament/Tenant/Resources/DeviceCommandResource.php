@@ -2,6 +2,8 @@
 
 namespace App\Filament\Tenant\Resources;
 
+use App\Filament\Tenant\Resources\DeviceCommandResource\Pages;
+use App\Models\DeviceCommand;
 use Filament\Actions\Action;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteAction;
@@ -14,15 +16,12 @@ use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Filament\Tables;
 use Filament\Tables\Table;
-use App\Filament\Tenant\Resources\DeviceCommandResource\Pages;
-
-use App\Models\DeviceCommand;
 
 class DeviceCommandResource extends Resource
 {
     protected static ?string $model = DeviceCommand::class;
 
-    protected static string | \BackedEnum | null $navigationIcon = 'heroicon-o-command-line';
+    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-command-line';
 
     protected static \UnitEnum|string|null $navigationGroup = 'Device Management';
 
@@ -46,16 +45,7 @@ class DeviceCommandResource extends Resource
                         ->options([
                             'INFO' => 'Get Device Info',
                             'REBOOT' => 'Reboot Device',
-                            'reboot' => 'Reboot Device (API)',
                             'CLEAR' => 'Clear Data',
-                            'clear_logs' => 'Clear Logs (API)',
-                            'reset_transaction_stamp' => 'Reset Transaction Stamp',
-                            'reset_op_stamp' => 'Reset OP Stamp',
-                            'unlock_door' => 'Unlock Door',
-                            'block_user' => 'Block User',
-                            'unblock_user' => 'Unblock User',
-                            'enroll_finger' => 'Enroll Finger',
-                            'enroll_face' => 'Enroll Face',
                             'DATA' => 'Send Data',
                             'CHECK' => 'Check Connection',
                         ])
@@ -89,8 +79,7 @@ class DeviceCommandResource extends Resource
                 Tables\Columns\TextColumn::make('command_type')
                     ->badge(),
                 Tables\Columns\TextColumn::make('command_content')
-                    ->limit(40)
-                    ->visibleFrom('md'),
+                    ->limit(40),
                 Tables\Columns\TextColumn::make('status')
                     ->badge()
                     ->color(fn (string $state): string => match ($state) {
@@ -101,16 +90,12 @@ class DeviceCommandResource extends Resource
                         default => 'gray',
                     }),
                 Tables\Columns\TextColumn::make('sent_at')
-                    ->dateTime()
-                    ->visibleFrom('md'),
+                    ->dateTime(),
                 Tables\Columns\TextColumn::make('acknowledged_at')
-                    ->dateTime()
-                    ->visibleFrom('md'),
+                    ->dateTime(),
                 Tables\Columns\TextColumn::make('retry_count')
-                    ->label('Retries')
-                    ->visibleFrom('md'),
+                    ->label('Retries'),
             ])
-            ->poll(fn () => \App\Models\DeviceCommand::whereIn('status', ['pending', 'sent'])->exists() ? '10s' : null)
             ->defaultSort('created_at', 'desc')
             ->filters([
                 Tables\Filters\SelectFilter::make('device')
@@ -126,30 +111,19 @@ class DeviceCommandResource extends Resource
                     ->options([
                         'INFO' => 'Get Device Info',
                         'REBOOT' => 'Reboot Device',
-                        'reboot' => 'Reboot Device (API)',
                         'CLEAR' => 'Clear Data',
-                        'clear_logs' => 'Clear Logs (API)',
-                        'reset_transaction_stamp' => 'Reset Transaction Stamp',
-                        'reset_op_stamp' => 'Reset OP Stamp',
-                        'unlock_door' => 'Unlock Door',
-                        'block_user' => 'Block User',
-                        'unblock_user' => 'Unblock User',
-                        'enroll_finger' => 'Enroll Finger',
-                        'enroll_face' => 'Enroll Face',
                         'DATA' => 'Send Data',
                         'CHECK' => 'Check Connection',
                     ]),
             ])
             ->recordActions([
-                \Filament\Actions\ActionGroup::make([
-                    ViewAction::make(),
-                    Action::make('retry')
-                        ->icon('heroicon-o-arrow-path')
-                        ->color('warning')
-                        ->visible(fn (DeviceCommand $record) => in_array($record->status, ['failed', 'sent']))
-                        ->action(fn (DeviceCommand $record) => $record->retry()),
-                    DeleteAction::make(),
-                ])
+                ViewAction::make(),
+                Action::make('retry')
+                    ->icon('heroicon-o-arrow-path')
+                    ->color('warning')
+                    ->visible(fn (DeviceCommand $record) => in_array($record->status, ['failed', 'sent']))
+                    ->action(fn (DeviceCommand $record) => $record->retry()),
+                DeleteAction::make(),
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
