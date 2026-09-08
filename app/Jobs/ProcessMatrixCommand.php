@@ -4,11 +4,12 @@ namespace App\Jobs;
 
 use App\Models\DeviceCommand;
 use App\Models\Organisation;
+use App\Services\Attendance\MatrixDeviceService;
+use Carbon\Carbon;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class ProcessMatrixCommand implements ShouldQueue
@@ -32,47 +33,35 @@ class ProcessMatrixCommand implements ShouldQueue
             tenancy()->initialize(Organisation::findOrFail($this->organisationId));
             $command = DeviceCommand::findOrFail($this->commandId);
             $device = $command->device;
-            $baseUrl = ($device->protocol ?? 'http').'://'.$device->ip_address.':'.($device->port ?? 80);
-            $auth = [$device->username, $device->password];
 
+            if (! $device) {
+                $command->update(['status' => 'failed', 'response' => 'Device not found for command.']);
+                return;
+            }
+
+            $matrixService = app(MatrixDeviceService::class);
             $content = $command->command_content;
 
             if (str_starts_with($content, 'INFO') || str_starts_with($content, 'CHECK')) {
-                // Get basic device config
-                $response = Http::withDigestAuth(...$auth)
-                    ->timeout(10)
-                    ->get($baseUrl.'/device.cgi/device-basic-config', [
-                        'action' => 'get',
-                        'format' => 'xml',
-                    ]);
-
-                if ($response->successful()) {
-                    $xml = simplexml_load_string($response->body());
-                    $model = (string) ($xml->name ?? 'Matrix Device');
+                $result = $matrixService->checkConnection($device);
+                if ($result['success']) {
                     $device->update([
                         'status' => 'online',
-                        'model' => $model,
+                        'model' => $result['model'] ?? $device->model,
                         'last_activity_at' => now(),
                     ]);
-                    $command->update(['status' => 'acknowledged', 'response' => "Device Online: {$model}"]);
+                    $command->update(['status' => 'acknowledged', 'response' => $result['message']]);
                 } else {
-                    $command->update(['status' => 'failed', 'response' => 'HTTP Error: '.$response->status()]);
+                    $device->update(['status' => 'offline']);
+                    $command->update(['status' => 'failed', 'response' => $result['message']]);
                 }
 
             } elseif (str_starts_with($content, 'DATA QUERY USERINFO')) {
-                // To fetch users, Matrix requires iterating over users.
-                // First get user count, then fetch each. For simplicity, we just acknowledge.
-                $response = Http::withDigestAuth(...$auth)
-                    ->timeout(10)
-                    ->get($baseUrl.'/device.cgi/command', [
-                        'action' => 'getusercount',
-                        'format' => 'xml',
-                    ]);
-
-                if ($response->successful()) {
-                    $command->update(['status' => 'acknowledged', 'response' => 'Fetched user count successfully (sync logic omitted for matrix)']);
+                $result = $matrixService->getUserCount($device);
+                if ($result['success']) {
+                    $command->update(['status' => 'acknowledged', 'response' => $result['message']]);
                 } else {
-                    $command->update(['status' => 'failed', 'response' => 'HTTP Error: '.$response->status()]);
+                    $command->update(['status' => 'failed', 'response' => $result['message']]);
                 }
 
             } elseif (str_starts_with($content, 'DATA USER ')) {
@@ -80,31 +69,17 @@ class ProcessMatrixCommand implements ShouldQueue
                 $name = $this->commandField($content, 'Name');
 
                 if ($pin) {
-                    // Matrix COSEC only accepts alphanumeric and spaces for name (max 15 chars)
-                    $matrixName = $name !== null ? substr(trim(preg_replace('/[^a-zA-Z0-9 ]+/', ' ', $name)), 0, 15) : null;
+                    $result = $matrixService->setUser($device, [
+                        'pin' => $pin,
+                        'name' => $name,
+                        'password' => $this->commandField($content, 'Passwd'),
+                        'card' => $this->commandField($content, 'Card'),
+                    ]);
 
-                    $response = Http::withDigestAuth(...$auth)
-                        ->timeout(10)
-                        ->get($baseUrl.'/device.cgi/users', array_filter([
-                            'action' => 'set',
-                            'user-id' => $pin,
-                            'ref-user-id' => $pin,
-                            'name' => $matrixName,
-                            'user-active' => 1,
-                            'user-pin' => $this->commandField($content, 'Passwd') ?: null,
-                            'card1' => $this->commandField($content, 'Card') ?: null,
-                            'user-group' => $this->commandField($content, 'Grp') ?: null,
-                            'format' => 'xml',
-                        ], fn ($v) => $v !== null));
-
-                    $body = $response->body();
-                    if ($response->successful() && str_contains($body, '<Response-Code>0</Response-Code>')) {
-                        $command->update(['status' => 'acknowledged', 'response' => 'User pushed to Matrix device successfully.']);
+                    if ($result['success']) {
+                        $command->update(['status' => 'acknowledged', 'response' => $result['message']]);
                     } else {
-                        $errorMsg = str_contains($body, 'Request Failed') || str_contains($body, '<Response-Code>')
-                            ? trim(strip_tags($body))
-                            : 'HTTP Error: '.$response->status();
-                        $command->update(['status' => 'failed', 'response' => $errorMsg]);
+                        $command->update(['status' => 'failed', 'response' => $result['message']]);
                     }
                 } else {
                     $command->update(['status' => 'failed', 'response' => 'Invalid command payload (Missing PIN)']);
@@ -115,52 +90,85 @@ class ProcessMatrixCommand implements ShouldQueue
                 $pin = $pinMatch[1] ?? '';
 
                 if ($pin) {
-                    $response = Http::withDigestAuth(...$auth)
-                        ->timeout(10)
-                        ->get($baseUrl.'/device.cgi/users', [
-                            'action' => 'delete',
-                            'user-id' => $pin,
-                            'format' => 'xml',
-                        ]);
-
-                    $body = $response->body();
-                    if ($response->successful() && (str_contains($body, '<Response-Code>0</Response-Code>') || str_contains($body, '<Response-Code>13</Response-Code>'))) {
-                        $command->update(['status' => 'acknowledged', 'response' => 'User deleted from Matrix device successfully.']);
+                    $result = $matrixService->deleteUser($device, $pin);
+                    if ($result['success']) {
+                        $command->update(['status' => 'acknowledged', 'response' => $result['message']]);
                     } else {
-                        $errorMsg = str_contains($body, 'Request Failed') || str_contains($body, '<Response-Code>')
-                            ? trim(strip_tags($body))
-                            : 'HTTP Error: '.$response->status();
-                        $command->update(['status' => 'failed', 'response' => $errorMsg]);
+                        $command->update(['status' => 'failed', 'response' => $result['message']]);
                     }
                 } else {
                     $command->update(['status' => 'failed', 'response' => 'Invalid command payload (Missing PIN)']);
                 }
 
             } elseif (str_starts_with($content, 'REBOOT')) {
-                // Matrix API manual doesn't explicitly mention a reboot command in device.cgi/command.
-                $command->update(['status' => 'failed', 'response' => 'Reboot command not natively supported via Matrix HTTP API']);
-            } elseif (str_starts_with($content, 'SET OPTIONS ServerLocalTime=')) {
-                $dateTime = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', substr($content, strlen('SET OPTIONS ServerLocalTime=')));
-                $response = Http::withDigestAuth(...$auth)
-                    ->timeout(10)
-                    ->get($baseUrl.'/device.cgi/date-time', [
-                        'action' => 'set',
-                        'date' => $dateTime->format('d'),
-                        'month' => $dateTime->format('m'),
-                        'year' => $dateTime->format('Y'),
-                        'hour' => $dateTime->format('H'),
-                        'minute' => $dateTime->format('i'),
-                        'second' => $dateTime->format('s'),
-                        'format' => 'xml',
-                    ]);
+                $command->update(['status' => 'failed', 'response' => 'Reboot command not supported via Matrix HTTP API']);
 
-                $response->successful()
-                    ? $command->update(['status' => 'acknowledged', 'response' => 'Matrix device time synchronized.'])
-                    : $command->update(['status' => 'failed', 'response' => 'HTTP Error: '.$response->status().' '.$response->body()]);
+            } elseif (str_starts_with($content, 'SET OPTIONS ServerLocalTime=')) {
+                $rawTime = substr($content, strlen('SET OPTIONS ServerLocalTime='));
+                $dateTime = Carbon::createFromFormat('Y-m-d H:i:s', $rawTime);
+                $result = $matrixService->syncTime($device, $dateTime);
+
+                if ($result['success']) {
+                    $command->update(['status' => 'acknowledged', 'response' => $result['message']]);
+                } else {
+                    $command->update(['status' => 'failed', 'response' => $result['message']]);
+                }
+
+            } elseif (str_starts_with($content, 'DOOR_UNLOCK')) {
+                $result = $matrixService->sendDoorCommand($device, 'unlockdoor');
+                $command->update([
+                    'status' => $result['success'] ? 'acknowledged' : 'failed',
+                    'response' => $result['message'],
+                ]);
+
+            } elseif (str_starts_with($content, 'DOOR_LOCK')) {
+                $result = $matrixService->sendDoorCommand($device, 'lockdoor');
+                $command->update([
+                    'status' => $result['success'] ? 'acknowledged' : 'failed',
+                    'response' => $result['message'],
+                ]);
+
+            } elseif (str_starts_with($content, 'DOOR_NORMALIZE')) {
+                $result = $matrixService->sendDoorCommand($device, 'normalizedoor');
+                $command->update([
+                    'status' => $result['success'] ? 'acknowledged' : 'failed',
+                    'response' => $result['message'],
+                ]);
+
+            } elseif (str_starts_with($content, 'ENROLL_BIOMETRIC ')) {
+                $json = substr($content, strlen('ENROLL_BIOMETRIC '));
+                $payload = json_decode($json, true) ?: [];
+                $pin = $payload['pin'] ?? null;
+                $type = $payload['type'] ?? 'face';
+                $extra = $payload['extra'] ?? [];
+
+                if (! $pin) {
+                    $command->update(['status' => 'failed', 'response' => 'Missing PIN for biometric enrollment.']);
+                } else {
+                    $user = \App\Models\User::where('pin', (string) $pin)->first();
+                    if ($user) {
+                        $extra['name'] = $user->name;
+                        $extra['user_id'] = $user->id;
+                    }
+
+                    $result = $matrixService->enrollBiometric($device, (string) $pin, $type, $extra);
+                    $command->update([
+                        'status' => $result['success'] ? 'acknowledged' : 'failed',
+                        'response' => $result['message'],
+                    ]);
+                }
+
+            } elseif (str_starts_with($content, 'ENABLE_ENROLLMENT')) {
+                $result = $matrixService->enableDeviceEnrollment($device);
+                $command->update([
+                    'status' => $result['success'] ? 'acknowledged' : 'failed',
+                    'response' => $result['message'],
+                ]);
+
             } elseif (str_starts_with($content, 'CLEAR LOG')) {
-                $command->update(['status' => 'failed', 'response' => 'Clear Log command not explicitly supported via Matrix HTTP API']);
+                $command->update(['status' => 'failed', 'response' => 'Clear Log command not supported via Matrix HTTP API']);
+
             } else {
-                // Command not fully mapped
                 $command->update(['status' => 'acknowledged', 'response' => 'Simulated success (Command not strictly mapped for Matrix)']);
             }
 

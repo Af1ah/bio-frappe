@@ -100,6 +100,37 @@ class DeviceCommandBuilder
         return $this->createCommand($device, 'INFO', "SET OPTIONS ServerLocalTime={$now}");
     }
 
+    public function unlockDoor(Device $device): DeviceCommand
+    {
+        return $this->createCommand($device, 'DOOR_UNLOCK', 'DOOR_UNLOCK');
+    }
+
+    public function lockDoor(Device $device): DeviceCommand
+    {
+        return $this->createCommand($device, 'DOOR_LOCK', 'DOOR_LOCK');
+    }
+
+    public function normalizeDoor(Device $device): DeviceCommand
+    {
+        return $this->createCommand($device, 'DOOR_NORMALIZE', 'DOOR_NORMALIZE');
+    }
+
+    public function enrollBiometric(Device $device, string $pin, string $type, array $extra = []): DeviceCommand
+    {
+        $payload = [
+            'pin' => $pin,
+            'type' => $type,
+            'extra' => $extra,
+        ];
+
+        return $this->createCommand($device, 'ENROLL_BIOMETRIC', 'ENROLL_BIOMETRIC ' . json_encode($payload));
+    }
+
+    public function enableEnrollment(Device $device): DeviceCommand
+    {
+        return $this->createCommand($device, 'ENABLE_ENROLLMENT', 'ENABLE_ENROLLMENT');
+    }
+
     protected function createCommand(Device $device, string $type, string $content): DeviceCommand
     {
         $modelClass = config('zkteco-adms.models.device_command', DeviceCommand::class);
@@ -113,8 +144,10 @@ class DeviceCommandBuilder
 
         if ($device->vendor === 'hikvision') {
             ProcessHikvisionCommand::dispatchSync($command->id, (string) tenant('id'));
+            $command->refresh();
         } elseif ($device->vendor === 'matrix') {
             ProcessMatrixCommand::dispatchSync($command->id, (string) tenant('id'));
+            $command->refresh();
         }
 
         return $command;

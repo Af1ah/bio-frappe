@@ -9,6 +9,8 @@ use App\Models\Device;
 use App\Models\TaskGroup;
 use App\Models\User;
 use App\Services\Attendance\DeviceCommandBuilder;
+use Filament\Actions\Action;
+use Filament\Actions\ActionGroup;
 use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
@@ -285,8 +287,197 @@ class UserResource extends Resource
                     ->default(true),
             ])
             ->recordActions([
-                ViewAction::make(),
-                EditAction::make(),
+                ActionGroup::make([
+                    ViewAction::make(),
+                    EditAction::make(),
+                    Action::make('enrollOnDevice')
+                        ->label('Enroll Biometric on Device')
+                        ->icon('heroicon-o-finger-print')
+                        ->color('info')
+                        ->modalHeading(fn (User $record) => "Biometric Enrollment: {$record->name} (PIN: {$record->pin})")
+                        ->modalDescription('Command a Matrix device to initiate on-device biometric or card capture.')
+                        ->form([
+                            Select::make('device_id')
+                                ->label('Select Matrix Device')
+                                ->options(function () {
+                                    return Device::where('vendor', 'matrix')
+                                        ->get()
+                                        ->mapWithKeys(fn (Device $d) => [$d->id => "{$d->name} ({$d->ip_address})"]);
+                                })
+                                ->default(fn () => Device::where('vendor', 'matrix')->first()?->id)
+                                ->required()
+                                ->live(),
+                            Select::make('method')
+                                ->label('Enrollment Method')
+                                ->options(function ($get) {
+                                    $deviceId = $get('device_id');
+                                    if (! $deviceId) {
+                                        return [];
+                                    }
+                                    $dev = Device::find($deviceId);
+                                    $methods = $dev?->getEnrollmentMethods() ?? ['face', 'card', 'special_card'];
+
+                                    $labels = [
+                                        'face' => 'Face Recognition',
+                                        'finger' => 'Fingerprint',
+                                        'card' => 'RFID Card',
+                                        'special_card' => 'Special Function Card',
+                                    ];
+
+                                    $available = [];
+                                    foreach ($methods as $m) {
+                                        if (isset($labels[$m])) {
+                                            $available[$m] = $labels[$m];
+                                        }
+                                    }
+
+                                    return $available;
+                                })
+                                ->required()
+                                ->live(),
+                            Select::make('sp_fn_id')
+                                ->label('Special Function')
+                                ->visible(fn ($get) => $get('method') === 'special_card')
+                                ->options([
+                                    18 => 'Door Lock',
+                                    19 => 'Door Unlock',
+                                    20 => 'Door Normal',
+                                    21 => 'Clear Alarm',
+                                    1 => 'Official Work - IN',
+                                    2 => 'Official Work - OUT',
+                                    3 => 'Short Leave - IN',
+                                    4 => 'Short Leave - OUT',
+                                    5 => 'Regular - IN',
+                                    6 => 'Regular - OUT',
+                                ])
+                                ->default(19)
+                                ->required(fn ($get) => $get('method') === 'special_card'),
+                        ])
+                        ->action(function (User $record, array $data) {
+                            $device = Device::find($data['device_id']);
+                            if (! $device) {
+                                Notification::make()->title('Device not found')->danger()->send();
+                                return;
+                            }
+
+                            if (! $record->pin) {
+                                Notification::make()->title('User has no PIN')->body('A User ID (PIN) is required for device enrollment.')->danger()->send();
+                                return;
+                            }
+
+                            $extra = [];
+                            if ($data['method'] === 'special_card' && isset($data['sp_fn_id'])) {
+                                $extra['sp_fn_id'] = $data['sp_fn_id'];
+                            }
+
+                            $cmd = app(DeviceCommandBuilder::class)->enrollBiometric($device, (string) $record->pin, $data['method'], $extra);
+
+                            if ($cmd->status === 'failed') {
+                                Notification::make()
+                                    ->title('Enrollment Request Failed')
+                                    ->body($cmd->response ?: 'Could not initiate enrollment on device.')
+                                    ->danger()
+                                    ->send();
+                            } else {
+                                $methodLabel = match ($data['method']) {
+                                    'face' => 'Face Recognition',
+                                    'finger' => 'Fingerprint',
+                                    'card' => 'RFID Card',
+                                    'special_card' => 'Special Function Card',
+                                    default => ucfirst($data['method']),
+                                };
+
+                                Notification::make()
+                                    ->title("{$methodLabel} Enrollment Initiated")
+                                    ->body("Please proceed on the {$device->name} screen to complete capture.")
+                                    ->success()
+                                    ->persistent()
+                                    ->send();
+                            }
+                        }),
+                    Action::make('pushToDevice')
+                        ->label('Push to Device')
+                        ->icon('heroicon-o-arrow-up-on-square')
+                        ->color('success')
+                        ->form([
+                            Select::make('device_id')
+                                ->label('Select Device')
+                                ->options(Device::all()->mapWithKeys(fn ($d) => [$d->id => ($d->name ?: $d->serial_number) . " (" . ucfirst($d->vendor) . ")"])->toArray())
+                                ->default(fn () => Device::first()?->id)
+                                ->required(),
+                            CheckboxList::make('sync_properties')
+                                ->label('What to sync?')
+                                ->options([
+                                    'profile' => 'Basic Profile (Name, Card, Password)',
+                                    'biometrics' => 'Biometrics (Fingerprints)',
+                                ])
+                                ->default(['profile', 'biometrics'])
+                                ->required(),
+                        ])
+                        ->action(function (User $record, array $data) {
+                            $device = Device::find($data['device_id']);
+                            if (! $device) {
+                                Notification::make()->title('Device not found')->danger()->send();
+                                return;
+                            }
+
+                            if (! $record->pin) {
+                                Notification::make()->title('User has no PIN')->body('A User ID (PIN) is required for device sync.')->danger()->send();
+                                return;
+                            }
+
+                            $builder = app(DeviceCommandBuilder::class);
+                            $syncProfile = in_array('profile', $data['sync_properties']);
+                            $syncBio = in_array('biometrics', $data['sync_properties']);
+
+                            $cmd = null;
+                            if ($syncProfile) {
+                                $cmd = $builder->addUser($device, [
+                                    'pin' => $record->pin,
+                                    'name' => $record->name,
+                                    'card' => $record->card_number,
+                                    'privilege' => $record->privilege,
+                                    'password' => $record->device_password,
+                                    'group' => $record->group ?? 1,
+                                    'user_id' => $record->id,
+                                ]);
+                            }
+
+                            if ($syncBio && !empty($record->fingerprints) && is_array($record->fingerprints)) {
+                                foreach ($record->fingerprints as $key => $fp) {
+                                    $id = is_numeric($key) ? (int) $key : ($fp['finger_id'] ?? $fp['fid'] ?? null);
+                                    if ($id !== null && isset($fp['tmp'])) {
+                                        $builder->addFingerprint($device, $record->pin, $id, $fp['tmp']);
+                                    }
+                                }
+                            }
+
+                            if (in_array($device->vendor, ['matrix', 'hikvision'])) {
+                                if ($cmd && $cmd->status === 'failed') {
+                                    Notification::make()
+                                        ->title('Device Push Failed')
+                                        ->body($cmd->response ?: 'Could not push user to device.')
+                                        ->danger()
+                                        ->persistent()
+                                        ->send();
+                                } else {
+                                    Notification::make()
+                                        ->title('User Synced Successfully')
+                                        ->body("User '{$record->name}' was synced to {$device->name}.")
+                                        ->success()
+                                        ->send();
+                                }
+                            } else {
+                                Notification::make()
+                                    ->title('Command Queued')
+                                    ->body("User '{$record->name}' queued for next device poll.")
+                                    ->success()
+                                    ->send();
+                            }
+                        }),
+                ])
+                ->icon('heroicon-m-ellipsis-vertical')
+                ->tooltip('Actions'),
             ])
             ->bulkActions([
                 BulkActionGroup::make([
@@ -324,17 +515,37 @@ class UserResource extends Resource
                             $devices = Device::whereIn('id', $deviceIds)->get();
                             $builder = app(DeviceCommandBuilder::class);
 
+                            $errors = [];
+                            $directSuccess = 0;
+                            $admsQueued = 0;
+
                             foreach ($devices as $device) {
                                 foreach ($records as $user) {
+                                    if (! $user->pin) {
+                                        $errors[] = "User '{$user->name}' has no PIN / User ID.";
+                                        continue;
+                                    }
+
                                     if ($syncProfile) {
-                                        $builder->addUser($device, [
+                                        $cmd = $builder->addUser($device, [
                                             'pin' => $user->pin,
                                             'name' => $user->name,
                                             'card' => $user->card_number,
                                             'privilege' => $user->privilege,
                                             'password' => $user->device_password,
                                             'group' => $user->group ?? 1,
+                                            'user_id' => $user->id,
                                         ]);
+
+                                        if (in_array($device->vendor, ['matrix', 'hikvision'])) {
+                                            if ($cmd->status === 'failed') {
+                                                $errors[] = "{$device->name} ({$user->name}): {$cmd->response}";
+                                            } else {
+                                                $directSuccess++;
+                                            }
+                                        } else {
+                                            $admsQueued++;
+                                        }
                                     }
 
                                     if ($syncBio) {
@@ -351,12 +562,26 @@ class UserResource extends Resource
                                 }
                             }
 
-                            $deviceCount = $devices->count();
-                            Notification::make()
-                                ->title('Commands Queued')
-                                ->body("{$records->count()} user(s) synced across {$deviceCount} device(s) for the next ADMS poll.")
-                                ->success()
-                                ->send();
+                            if (! empty($errors)) {
+                                Notification::make()
+                                    ->title('Device Sync Errors')
+                                    ->body(implode("\n", array_slice($errors, 0, 5)))
+                                    ->danger()
+                                    ->persistent()
+                                    ->send();
+                            } elseif ($directSuccess > 0) {
+                                Notification::make()
+                                    ->title('Users Synced')
+                                    ->body("Successfully synced {$records->count()} user(s) to device(s).")
+                                    ->success()
+                                    ->send();
+                            } else {
+                                Notification::make()
+                                    ->title('Commands Queued')
+                                    ->body("{$records->count()} user(s) queued for device poll.")
+                                    ->success()
+                                    ->send();
+                            }
                         })
                         ->deselectRecordsAfterCompletion(),
                     BulkAction::make('deleteFromDevice')
@@ -373,17 +598,38 @@ class UserResource extends Resource
                             $device = Device::find($data['device_id']);
 
                             if ($device) {
-                                $count = 0;
+                                $errors = [];
+                                $successCount = 0;
+
                                 foreach ($records as $record) {
-                                    app(DeviceCommandBuilder::class)->deleteUser($device, $record->pin);
-                                    $count++;
+                                    if (! $record->pin) {
+                                        continue;
+                                    }
+                                    $cmd = app(DeviceCommandBuilder::class)->deleteUser($device, $record->pin);
+                                    if (in_array($device->vendor, ['matrix', 'hikvision'])) {
+                                        if ($cmd->status === 'failed') {
+                                            $errors[] = "{$record->name}: {$cmd->response}";
+                                        } else {
+                                            $successCount++;
+                                        }
+                                    } else {
+                                        $successCount++;
+                                    }
                                 }
 
-                                Notification::make()
-                                    ->title('Commands queued')
-                                    ->body("{$count} users will be deleted from the device shortly.")
-                                    ->success()
-                                    ->send();
+                                if (! empty($errors)) {
+                                    Notification::make()
+                                        ->title('Delete Errors')
+                                        ->body(implode("\n", array_slice($errors, 0, 5)))
+                                        ->danger()
+                                        ->send();
+                                } else {
+                                    Notification::make()
+                                        ->title('Delete Processed')
+                                        ->body("{$successCount} user(s) processed for deletion from {$device->name}.")
+                                        ->success()
+                                        ->send();
+                                }
                             }
                         })
                         ->deselectRecordsAfterCompletion(),

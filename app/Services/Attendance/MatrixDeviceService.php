@@ -1,0 +1,530 @@
+<?php
+
+namespace App\Services\Attendance;
+
+use App\Models\Device;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+
+class MatrixDeviceService
+{
+    /**
+     * Map of Matrix API Response Codes to human-readable explanations
+     * according to the Matrix COSEC Devices API User Guide (Table: API Response Codes).
+     */
+    public const RESPONSE_CODES = [
+        0 => 'Successful',
+        1 => 'Failed - Invalid Login Credentials',
+        2 => 'Date and time – manual set failed',
+        3 => 'Invalid Date/Time',
+        4 => 'Maximum users are already configured on device',
+        5 => 'Image – size is too big',
+        6 => 'Image – format not supported',
+        7 => 'Card 1 and card 2 are identical',
+        8 => 'Card ID already exists on device',
+        9 => 'Fingerprint or Palm template already exists',
+        10 => 'No Record Found',
+        11 => 'Template size or format mismatch',
+        12 => 'Fingerprint memory full on device',
+        13 => 'User ID not found on device',
+        14 => 'Credential limit reached on device',
+        15 => 'Reader mismatch or Reader not configured',
+        16 => 'Device Busy (Another enrollment or menu is currently active on device)',
+        17 => 'Internal device process error',
+        18 => 'PIN already exists on device',
+        19 => 'Biometric credential not found on device',
+        20 => 'Memory Card not found',
+        21 => 'Reference User ID already exists',
+        22 => 'Wrong Selection (count exceeds maximum available places)',
+    ];
+
+    /**
+     * Test connection and retrieve basic configuration from a Matrix COSEC device.
+     */
+    public function checkConnection(Device $device): array
+    {
+        if (empty($device->ip_address)) {
+            return [
+                'success' => false,
+                'message' => 'Device IP address is not configured.',
+                'status' => 'offline',
+            ];
+        }
+
+        $baseUrl = $this->buildBaseUrl($device);
+        $auth = [$device->username ?? 'admin', $device->password ?? '1234'];
+
+        try {
+            $response = Http::withDigestAuth(...$auth)
+                ->timeout(5)
+                ->get("{$baseUrl}/device.cgi/device-basic-config", [
+                    'action' => 'get',
+                    'format' => 'xml',
+                ]);
+
+            if ($response->status() === 401) {
+                return [
+                    'success' => false,
+                    'message' => 'Authentication failed: Invalid username or password (HTTP 401).',
+                    'status' => 'offline',
+                ];
+            }
+
+            if (!$response->successful()) {
+                return [
+                    'success' => false,
+                    'message' => "Device returned HTTP error: {$response->status()}",
+                    'status' => 'offline',
+                ];
+            }
+
+            $body = $response->body();
+            $parsed = $this->parseResponse($body, $response->status());
+
+            if (!$parsed['success']) {
+                return [
+                    'success' => false,
+                    'message' => $parsed['message'],
+                    'status' => 'offline',
+                ];
+            }
+
+            $xml = @simplexml_load_string($body);
+            $deviceName = trim((string) ($xml->name ?? ''));
+            $model = !empty($deviceName) ? "Matrix COSEC ({$deviceName})" : 'Matrix COSEC';
+
+            // Detect supported enrollment methods from device capabilities
+            $methods = ['card'];
+            if (isset($xml->{'max-faces'}) && (int) $xml->{'max-faces'} > 0) {
+                $methods[] = 'face';
+            }
+            if (isset($xml->{'max-fingers'}) && (int) $xml->{'max-fingers'} > 0) {
+                $methods[] = 'finger';
+            }
+            $methods[] = 'special_card';
+
+            return [
+                'success' => true,
+                'message' => "Device is online ({$model})",
+                'status' => 'online',
+                'model' => $model,
+                'device_name' => $deviceName,
+                'enrollment_methods' => array_values(array_unique($methods)),
+            ];
+        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+            return [
+                'success' => false,
+                'message' => "Cannot connect to Matrix device at {$device->ip_address}:" . ($device->port ?? 80) . " (Connection timed out or host unreachable).",
+                'status' => 'offline',
+            ];
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'message' => 'Connection error: ' . $e->getMessage(),
+                'status' => 'offline',
+            ];
+        }
+    }
+
+    /**
+     * Add or update a user on a Matrix COSEC device.
+     * Note: In Matrix COSEC CGI API, 'user-group' is NOT supported on many door firmware versions
+     * and causes 'Request Failed: Invalid Command "user-group=1"'.
+     * 'ref-user-id' must be strictly numeric (up to 8 digits).
+     */
+    public function setUser(Device $device, array $userData): array
+    {
+        $pin = (string) ($userData['pin'] ?? '');
+        if (empty($pin)) {
+            return [
+                'success' => false,
+                'message' => 'User PIN is required for Matrix device configuration.',
+                'code' => null,
+            ];
+        }
+
+        $baseUrl = $this->buildBaseUrl($device);
+        $auth = [$device->username ?? 'admin', $device->password ?? '1234'];
+
+        // Clean user name: Matrix only accepts alphanumeric and spaces, max 15 characters
+        $rawName = $userData['name'] ?? "User {$pin}";
+        $cleanName = substr(trim(preg_replace('/[^a-zA-Z0-9 ]+/', ' ', $rawName)), 0, 15);
+        if (empty($cleanName)) {
+            $cleanName = "User {$pin}";
+        }
+
+        // ref-user-id must be strictly numeric and maximum 8 digits (1 to 99999999)
+        $numericPin = preg_replace('/[^0-9]/', '', $pin);
+        if (!empty($numericPin)) {
+            $refUserId = substr($numericPin, 0, 8);
+        } elseif (isset($userData['user_id']) && is_numeric($userData['user_id'])) {
+            $refUserId = (string) (((int) $userData['user_id']) % 100000000);
+        } else {
+            $refUserId = '1';
+        }
+
+        $params = [
+            'action' => 'set',
+            'user-id' => substr($pin, 0, 10),
+            'ref-user-id' => $refUserId,
+            'name' => $cleanName,
+            'user-active' => 1,
+            'enable-fr' => 1,
+            'format' => 'xml',
+        ];
+
+        // Optional PIN (1 to 6 digits)
+        if (!empty($userData['password'])) {
+            $numericPass = preg_replace('/[^0-9]/', '', (string) $userData['password']);
+            if (!empty($numericPass)) {
+                $params['user-pin'] = substr($numericPass, 0, 6);
+            }
+        }
+
+        // Optional RFID Card number (numeric, up to 64 bits)
+        if (!empty($userData['card'])) {
+            $numericCard = preg_replace('/[^0-9]/', '', (string) $userData['card']);
+            if (!empty($numericCard) && $numericCard !== '0') {
+                $params['card1'] = $numericCard;
+            }
+        }
+
+        try {
+            $response = Http::withDigestAuth(...$auth)
+                ->timeout(10)
+                ->get("{$baseUrl}/device.cgi/users", $params);
+
+            $body = $response->body();
+            // If device doesn't support enable-fr, gracefully retry without it
+            if (stripos($body, 'enable-fr') !== false && stripos($body, 'Invalid Command') !== false) {
+                unset($params['enable-fr']);
+                $response = Http::withDigestAuth(...$auth)
+                    ->timeout(10)
+                    ->get("{$baseUrl}/device.cgi/users", $params);
+            }
+
+            return $this->parseResponse($response->body(), $response->status(), 'User successfully saved on Matrix device.');
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'message' => 'Matrix HTTP request error: ' . $e->getMessage(),
+                'code' => null,
+            ];
+        }
+    }
+
+    /**
+     * Enable enrollment on the Matrix COSEC device (enroll-options?action=set&enroll-on-device=1).
+     */
+    public function enableDeviceEnrollment(Device $device, int $enrollMode = 0): array
+    {
+        $baseUrl = $this->buildBaseUrl($device);
+        $auth = [$device->username ?? 'admin', $device->password ?? '1234'];
+
+        try {
+            $response = Http::withDigestAuth(...$auth)
+                ->timeout(5)
+                ->get("{$baseUrl}/device.cgi/enroll-options", [
+                    'action' => 'set',
+                    'enroll-on-device' => 1,
+                    'format' => 'xml',
+                ]);
+
+            return $this->parseResponse($response->body(), $response->status(), 'Device enrollment enabled successfully (enroll-on-device=1).');
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'message' => 'Failed to enable device enrollment: ' . $e->getMessage(),
+                'code' => null,
+            ];
+        }
+    }
+
+    /**
+     * Delete a user from a Matrix COSEC device.
+     */
+    public function deleteUser(Device $device, string $pin): array
+    {
+        $baseUrl = $this->buildBaseUrl($device);
+        $auth = [$device->username ?? 'admin', $device->password ?? '1234'];
+
+        try {
+            $response = Http::withDigestAuth(...$auth)
+                ->timeout(10)
+                ->get("{$baseUrl}/device.cgi/users", [
+                    'action' => 'delete',
+                    'user-id' => substr($pin, 0, 10),
+                    'format' => 'xml',
+                ]);
+
+            $parsed = $this->parseResponse($response->body(), $response->status(), 'User deleted from Matrix device successfully.');
+            
+            // Response Code 13 means user was not found on device, which effectively means already deleted
+            if ($parsed['code'] === 13) {
+                return [
+                    'success' => true,
+                    'message' => 'User already does not exist on Matrix device.',
+                    'code' => 13,
+                ];
+            }
+
+            return $parsed;
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'message' => 'Matrix HTTP request error: ' . $e->getMessage(),
+                'code' => null,
+            ];
+        }
+    }
+
+    /**
+     * Initiate on-device biometric or card capture on a Matrix COSEC device.
+     */
+    public function enrollBiometric(Device $device, string $pin, string $type, array $extra = []): array
+    {
+        // 1. Ensure device enrollment is enabled on the device
+        $this->enableDeviceEnrollment($device);
+
+        // 2. Ensure user profile exists on the device with enable-fr=1 and user-active=1
+        $userSync = $this->setUser($device, [
+            'pin' => $pin,
+            'name' => $extra['name'] ?? null,
+            'user_id' => $extra['user_id'] ?? null,
+        ]);
+
+        if (!$userSync['success']) {
+            return [
+                'success' => false,
+                'message' => "Failed to prepare user on device: {$userSync['message']}",
+                'code' => $userSync['code'],
+            ];
+        }
+
+        $baseUrl = $this->buildBaseUrl($device);
+        $auth = [$device->username ?? 'admin', $device->password ?? '1234'];
+
+        try {
+            if ($type === 'special_card') {
+                $spFnId = (int) ($extra['sp_fn_id'] ?? 18);
+                $response = Http::withDigestAuth(...$auth)
+                    ->timeout(10)
+                    ->get("{$baseUrl}/device.cgi/enrollspcard", [
+                        'action' => 'enroll',
+                        'sp-fn-id' => $spFnId,
+                        'card-count' => 0,
+                        'format' => 'xml',
+                    ]);
+            } else {
+                // 0 = Card, 1 = Smart Card, 2 = Finger, 7 = Face
+                $matrixType = match ($type) {
+                    'card' => 0,
+                    'smart_card' => 1,
+                    'finger' => 2,
+                    'face' => 7,
+                    default => 7,
+                };
+
+                $response = Http::withDigestAuth(...$auth)
+                    ->timeout(10)
+                    ->get("{$baseUrl}/device.cgi/enrolluser", [
+                        'action' => 'enroll',
+                        'user-id' => substr($pin, 0, 10),
+                        'type' => $matrixType,
+                        'format' => 'xml',
+                    ]);
+            }
+
+            $typeLabel = match ($type) {
+                'face' => 'Face',
+                'finger' => 'Fingerprint',
+                'card' => 'RFID Card',
+                'special_card' => 'Special Function Card',
+                default => ucfirst($type),
+            };
+
+            return $this->parseResponse(
+                $response->body(),
+                $response->status(),
+                "{$typeLabel} enrollment initiated on {$device->name}. Please proceed on the device screen."
+            );
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'message' => 'Matrix enrollment error: ' . $e->getMessage(),
+                'code' => null,
+            ];
+        }
+    }
+
+    /**
+     * Send door commands: unlockdoor, lockdoor, normalizedoor.
+     */
+    public function sendDoorCommand(Device $device, string $action): array
+    {
+        $validActions = ['unlockdoor', 'lockdoor', 'normalizedoor'];
+        if (!in_array($action, $validActions)) {
+            return ['success' => false, 'message' => "Invalid door action: {$action}", 'code' => null];
+        }
+
+        $baseUrl = $this->buildBaseUrl($device);
+        $auth = [$device->username ?? 'admin', $device->password ?? '1234'];
+
+        try {
+            $response = Http::withDigestAuth(...$auth)
+                ->timeout(10)
+                ->get("{$baseUrl}/device.cgi/command", [
+                    'action' => $action,
+                    'format' => 'xml',
+                ]);
+
+            $successMsg = match ($action) {
+                'unlockdoor' => 'Door Unlocked successfully.',
+                'lockdoor' => 'Door Locked successfully.',
+                'normalizedoor' => 'Door returned to normal state.',
+            };
+
+            return $this->parseResponse($response->body(), $response->status(), $successMsg);
+        } catch (\Exception $e) {
+            return ['success' => false, 'message' => 'Door command error: ' . $e->getMessage(), 'code' => null];
+        }
+    }
+
+    /**
+     * Sync time to Matrix device.
+     */
+    public function syncTime(Device $device, ?\Carbon\Carbon $dateTime = null): array
+    {
+        $dateTime = $dateTime ?? now();
+        $baseUrl = $this->buildBaseUrl($device);
+        $auth = [$device->username ?? 'admin', $device->password ?? '1234'];
+
+        try {
+            $response = Http::withDigestAuth(...$auth)
+                ->timeout(10)
+                ->get("{$baseUrl}/device.cgi/date-time", [
+                    'action' => 'set',
+                    'date' => $dateTime->format('d'),
+                    'month' => $dateTime->format('m'),
+                    'year' => $dateTime->format('Y'),
+                    'hour' => $dateTime->format('H'),
+                    'minute' => $dateTime->format('i'),
+                    'second' => $dateTime->format('s'),
+                    'format' => 'xml',
+                ]);
+
+            return $this->parseResponse($response->body(), $response->status(), 'Device time synchronized successfully.');
+        } catch (\Exception $e) {
+            return ['success' => false, 'message' => 'Time sync error: ' . $e->getMessage(), 'code' => null];
+        }
+    }
+
+    /**
+     * Get enrolled user count from Matrix device.
+     */
+    public function getUserCount(Device $device): array
+    {
+        $baseUrl = $this->buildBaseUrl($device);
+        $auth = [$device->username ?? 'admin', $device->password ?? '1234'];
+
+        try {
+            $response = Http::withDigestAuth(...$auth)
+                ->timeout(10)
+                ->get("{$baseUrl}/device.cgi/command", [
+                    'action' => 'getusercount',
+                    'format' => 'xml',
+                ]);
+
+            $body = $response->body();
+            if (preg_match('/<Enrolled-User-Count>(\d+)<\/Enrolled-User-Count>/i', $body, $matches)) {
+                return [
+                    'success' => true,
+                    'count' => (int) $matches[1],
+                    'message' => "Enrolled users on device: {$matches[1]}",
+                ];
+            }
+
+            return $this->parseResponse($body, $response->status(), 'User count retrieved.');
+        } catch (\Exception $e) {
+            return ['success' => false, 'message' => 'Get user count error: ' . $e->getMessage(), 'count' => null];
+        }
+    }
+
+    /**
+     * Parse Matrix HTTP response body and status code into a clear, friendly array.
+     */
+    public function parseResponse(string $body, int $httpStatus, string $defaultSuccessMessage = 'Command executed successfully.'): array
+    {
+        if ($httpStatus === 401) {
+            return [
+                'success' => false,
+                'message' => 'Authentication failed: Invalid username or password (HTTP 401).',
+                'code' => 1,
+            ];
+        }
+
+        if ($httpStatus >= 400) {
+            return [
+                'success' => false,
+                'message' => "Matrix device HTTP error {$httpStatus}.",
+                'code' => null,
+            ];
+        }
+
+        // Check for Response-Code tag
+        if (preg_match('/<Response-Code>(\d+)<\/Response-Code>/i', $body, $matches)) {
+            $code = (int) $matches[1];
+            if ($code === 0) {
+                return [
+                    'success' => true,
+                    'message' => $defaultSuccessMessage,
+                    'code' => 0,
+                ];
+            }
+
+            $description = self::RESPONSE_CODES[$code] ?? "Matrix device error code {$code}";
+            return [
+                'success' => false,
+                'message' => "Device Error: {$description} (Code {$code})",
+                'code' => $code,
+            ];
+        }
+
+        // Check for "Request Failed: ..."
+        if (stripos($body, 'Request Failed') !== false) {
+            $cleanError = trim(strip_tags($body));
+            return [
+                'success' => false,
+                'message' => $cleanError,
+                'code' => null,
+            ];
+        }
+
+        // Fallback check: if XML is valid without error tags
+        if (stripos($body, '<COSEC_API>') !== false) {
+            return [
+                'success' => true,
+                'message' => $defaultSuccessMessage,
+                'code' => 0,
+            ];
+        }
+
+        return [
+            'success' => true,
+            'message' => $defaultSuccessMessage,
+            'code' => 0,
+        ];
+    }
+
+    /**
+     * Build base URL for Matrix HTTP device.
+     */
+    protected function buildBaseUrl(Device $device): string
+    {
+        $protocol = $device->protocol ?: 'http';
+        $ip = $device->ip_address;
+        $port = $device->port ?: 80;
+
+        return "{$protocol}://{$ip}:{$port}";
+    }
+}

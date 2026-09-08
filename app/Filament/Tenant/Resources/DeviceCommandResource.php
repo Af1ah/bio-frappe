@@ -89,6 +89,12 @@ class DeviceCommandResource extends Resource
                         'failed' => 'danger',
                         default => 'gray',
                     }),
+                Tables\Columns\TextColumn::make('response')
+                    ->label('Device Response / Error')
+                    ->wrap()
+                    ->limit(60)
+                    ->tooltip(fn ($record) => $record->response)
+                    ->color(fn ($record) => $record->status === 'failed' ? 'danger' : 'gray'),
                 Tables\Columns\TextColumn::make('sent_at')
                     ->dateTime(),
                 Tables\Columns\TextColumn::make('acknowledged_at')

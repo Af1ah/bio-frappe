@@ -40,6 +40,9 @@ class ListDevices extends ListRecords
                         ->options(function (callable $get) {
                             $deviceId = $get('device_id');
                             $options = [
+                                'unlockDoor' => 'Unlock Door (Pulse / Release Lock)',
+                                'lockDoor' => 'Lock Door',
+                                'normalizeDoor' => 'Set Door to Normal State',
                                 'info' => 'Get Device Info',
                                 'reboot' => 'Reboot Device',
                                 'checkConnection' => 'Check Connection',
@@ -61,6 +64,10 @@ class ListDevices extends ListRecords
                                     ];
                                 } elseif ($device && $device->vendor === 'matrix') {
                                     return [
+                                        'unlockDoor' => 'Unlock Door (Pulse / Release Lock)',
+                                        'lockDoor' => 'Lock Door',
+                                        'normalizeDoor' => 'Set Door to Normal State',
+                                        'syncTime' => 'Sync Time',
                                         'info' => 'Get Device Info',
                                         'checkConnection' => 'Check Connection',
                                         'queryAllUsers' => 'Pull All Users (Counts)',
@@ -93,15 +100,30 @@ class ListDevices extends ListRecords
                     $commandMethod = $data['command'];
 
                     if (method_exists($builder, $commandMethod)) {
-                        $builder->$commandMethod($device);
+                        $cmd = $builder->$commandMethod($device);
 
-                        Notification::make()
-                            ->title($device->vendor === 'matrix' ? 'Command Sent' : 'Command Queued')
-                            ->body($device->vendor === 'matrix'
-                                ? "The '{$data['command']}' command was sent directly to the Matrix device. Check its status below."
-                                : "The '{$data['command']}' command will be executed on the next device poll.")
-                            ->success()
-                            ->send();
+                        if ($device->vendor === 'matrix') {
+                            if ($cmd->status === 'failed') {
+                                Notification::make()
+                                    ->title('Matrix Command Failed')
+                                    ->body($cmd->response ?: "The '{$data['command']}' command failed on the Matrix device.")
+                                    ->danger()
+                                    ->persistent()
+                                    ->send();
+                            } else {
+                                Notification::make()
+                                    ->title('Matrix Command Executed')
+                                    ->body($cmd->response ?: "The '{$data['command']}' command completed successfully.")
+                                    ->success()
+                                    ->send();
+                            }
+                        } else {
+                            Notification::make()
+                                ->title('Command Queued')
+                                ->body("The '{$data['command']}' command will be executed on the next device poll.")
+                                ->success()
+                                ->send();
+                        }
                     }
                 }),
             Actions\CreateAction::make(),

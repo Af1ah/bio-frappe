@@ -84,4 +84,23 @@ class Device extends Model
     {
         return $this->belongsTo(Branch::class);
     }
+
+    public function getEnrollmentMethods(): array
+    {
+        $methods = $this->options['enrollment_methods'] ?? null;
+        if (is_array($methods) && ! empty($methods)) {
+            return $methods;
+        }
+
+        if ($this->vendor === 'matrix') {
+            return ['face', 'card', 'special_card'];
+        }
+
+        return ['finger', 'card'];
+    }
+
+    public function supportsEnrollmentMethod(string $method): bool
+    {
+        return in_array($method, $this->getEnrollmentMethods(), true);
+    }
 }
