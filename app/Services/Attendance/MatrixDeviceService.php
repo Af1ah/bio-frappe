@@ -134,11 +134,14 @@ class MatrixDeviceService
      */
     public function setUser(Device $device, array $userData): array
     {
-        $pin = (string) ($userData['pin'] ?? '');
+        // The background sync path calls this value a PIN, while the Matrix
+        // device-control form correctly calls it a User ID. They represent the
+        // same Matrix user-id parameter.
+        $pin = (string) ($userData['pin'] ?? $userData['user_id'] ?? '');
         if (empty($pin)) {
             return [
                 'success' => false,
-                'message' => 'User PIN is required for Matrix device configuration.',
+                'message' => 'Matrix User ID is required for device configuration.',
                 'code' => null,
             ];
         }
@@ -153,14 +156,28 @@ class MatrixDeviceService
             $cleanName = "User {$pin}";
         }
 
-        // ref-user-id must be strictly numeric and maximum 8 digits (1 to 99999999)
-        $numericPin = preg_replace('/[^0-9]/', '', $pin);
-        if (!empty($numericPin)) {
-            $refUserId = substr($numericPin, 0, 8);
-        } elseif (isset($userData['user_id']) && is_numeric($userData['user_id'])) {
-            $refUserId = (string) (((int) $userData['user_id']) % 100000000);
+        // ref-user-id must be strictly numeric and maximum 8 digits (1 to 99999999).
+        // Existing callers can omit it, but the device-control form may supply a
+        // distinct reference ID that must be retained.
+        $providedRefUserId = $userData['ref_user_id'] ?? $userData['reference_id'] ?? null;
+        if (filled($providedRefUserId)) {
+            $refUserId = (string) $providedRefUserId;
+            if (! preg_match('/^\d{1,8}$/', $refUserId)) {
+                return [
+                    'success' => false,
+                    'message' => 'Reference ID must contain 1 to 8 digits.',
+                    'code' => null,
+                ];
+            }
         } else {
-            $refUserId = '1';
+            $numericPin = preg_replace('/[^0-9]/', '', $pin);
+            if (! empty($numericPin)) {
+                $refUserId = substr($numericPin, 0, 8);
+            } elseif (isset($userData['user_id']) && is_numeric($userData['user_id'])) {
+                $refUserId = (string) (((int) $userData['user_id']) % 100000000);
+            } else {
+                $refUserId = '1';
+            }
         }
 
         $params = [
@@ -168,10 +185,14 @@ class MatrixDeviceService
             'user-id' => substr($pin, 0, 10),
             'ref-user-id' => $refUserId,
             'name' => $cleanName,
-            'user-active' => 1,
+            'user-active' => array_key_exists('user_active', $userData) && ! $userData['user_active'] ? 0 : 1,
             'enable-fr' => 1,
             'format' => 'xml',
         ];
+
+        if (array_key_exists('vip', $userData)) {
+            $params['vip'] = $userData['vip'] ? 1 : 0;
+        }
 
         // Optional PIN (1 to 6 digits)
         if (!empty($userData['password'])) {
@@ -181,12 +202,28 @@ class MatrixDeviceService
             }
         }
 
-        // Optional RFID Card number (numeric, up to 64 bits)
-        if (!empty($userData['card'])) {
-            $numericCard = preg_replace('/[^0-9]/', '', (string) $userData['card']);
-            if (!empty($numericCard) && $numericCard !== '0') {
-                $params['card1'] = $numericCard;
+        // Card fields can be cleared explicitly by passing an empty value. Matrix
+        // uses 0 to remove the respective card assignment.
+        foreach (['card1' => 'card1', 'card2' => 'card2', 'card' => 'card1'] as $input => $parameter) {
+            if (! array_key_exists($input, $userData)) {
+                continue;
             }
+
+            $card = trim((string) $userData[$input]);
+            if ($card === '') {
+                $params[$parameter] = '0';
+                continue;
+            }
+
+            if (! preg_match('/^\d{1,20}$/', $card)) {
+                return [
+                    'success' => false,
+                    'message' => ucfirst($parameter) . ' must contain up to 20 digits.',
+                    'code' => null,
+                ];
+            }
+
+            $params[$parameter] = $card;
         }
 
         try {
@@ -210,6 +247,56 @@ class MatrixDeviceService
                 'message' => 'Matrix HTTP request error: ' . $e->getMessage(),
                 'code' => null,
             ];
+        }
+    }
+
+    /**
+     * Retrieve one user's editable configuration from a Matrix COSEC device.
+     */
+    public function getUser(Device $device, string $userId): array
+    {
+        $userId = trim($userId);
+        if ($userId === '') {
+            return ['success' => false, 'message' => 'User ID is required.', 'user' => null];
+        }
+
+        $baseUrl = $this->buildBaseUrl($device);
+        $auth = [$device->username ?? 'admin', $device->password ?? '1234'];
+
+        try {
+            $response = Http::withDigestAuth(...$auth)
+                ->timeout(10)
+                ->get("{$baseUrl}/device.cgi/users", [
+                    'action' => 'get',
+                    'user-id' => $userId,
+                    'format' => 'xml',
+                ]);
+
+            $parsed = $this->parseResponse($response->body(), $response->status(), 'User retrieved.');
+            if (! $parsed['success']) {
+                return $parsed + ['user' => null];
+            }
+
+            $xml = @simplexml_load_string($response->body());
+            if (! $xml) {
+                return ['success' => false, 'message' => 'Matrix device returned invalid user data.', 'user' => null];
+            }
+
+            return [
+                'success' => true,
+                'message' => 'User retrieved.',
+                'user' => [
+                    'user_id' => (string) ($xml->{'user-id'} ?? $userId),
+                    'reference_id' => (string) ($xml->{'ref-user-id'} ?? ''),
+                    'name' => (string) ($xml->name ?? ''),
+                    'user_active' => (string) ($xml->{'user-active'} ?? '0') === '1',
+                    'vip' => (string) ($xml->vip ?? '0') === '1',
+                    'card1' => $this->cardValueFromResponse($xml->card1 ?? null),
+                    'card2' => $this->cardValueFromResponse($xml->card2 ?? null),
+                ],
+            ];
+        } catch (\Exception $e) {
+            return ['success' => false, 'message' => 'Get user error: ' . $e->getMessage(), 'user' => null];
         }
     }
 
@@ -451,6 +538,61 @@ class MatrixDeviceService
     }
 
     /**
+     * Get the current event sequence and rollover counters from a Matrix device.
+     */
+    public function getEventCount(Device $device): array
+    {
+        $baseUrl = $this->buildBaseUrl($device);
+        $auth = [$device->username ?? 'admin', $device->password ?? '1234'];
+
+        try {
+            $response = Http::withDigestAuth(...$auth)
+                ->timeout(10)
+                ->get("{$baseUrl}/device.cgi/command", [
+                    'action' => 'geteventcount',
+                    'format' => 'xml',
+                ]);
+
+            $body = $response->body();
+            $parsed = $this->parseResponse($body, $response->status(), 'Event count retrieved.');
+
+            if (! $parsed['success']) {
+                return $parsed + ['sequence' => null, 'rollover' => null];
+            }
+
+            $xml = @simplexml_load_string($body);
+            $sequence = $xml ? (int) ($xml->{'seq-number'} ?? $xml->{'Seq-Number'} ?? 0) : 0;
+            $rollover = $xml ? (int) ($xml->{'roll-over-count'} ?? $xml->{'Roll-Over-Count'} ?? 0) : 0;
+
+            if ($sequence < 1) {
+                return [
+                    'success' => false,
+                    'message' => 'Matrix device returned an invalid event sequence number.',
+                    'code' => null,
+                    'sequence' => null,
+                    'rollover' => null,
+                ];
+            }
+
+            return [
+                'success' => true,
+                'message' => 'Event count retrieved.',
+                'code' => $parsed['code'],
+                'sequence' => $sequence,
+                'rollover' => $rollover,
+            ];
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'message' => 'Get event count error: ' . $e->getMessage(),
+                'code' => null,
+                'sequence' => null,
+                'rollover' => null,
+            ];
+        }
+    }
+
+    /**
      * Parse Matrix HTTP response body and status code into a clear, friendly array.
      */
     public function parseResponse(string $body, int $httpStatus, string $defaultSuccessMessage = 'Command executed successfully.'): array
@@ -514,6 +656,130 @@ class MatrixDeviceService
             'message' => $defaultSuccessMessage,
             'code' => 0,
         ];
+    }
+
+    /**
+     * Get Reader Configuration from Matrix device.
+     */
+    public function getReaderConfig(Device $device): array
+    {
+        $baseUrl = $this->buildBaseUrl($device);
+        $auth = [$device->username ?? 'admin', $device->password ?? '1234'];
+
+        try {
+            $response = Http::withDigestAuth(...$auth)
+                ->timeout(5)
+                ->get("{$baseUrl}/device.cgi/reader-config", [
+                    'action' => 'get',
+                    'format' => 'xml',
+                ]);
+
+            if ($response->status() === 401) {
+                return ['success' => false, 'message' => 'Authentication failed (401)', 'data' => []];
+            }
+
+            $body = $response->body();
+            $xml = @simplexml_load_string($body);
+            if ($xml) {
+                return [
+                    'success' => true,
+                    'message' => 'Reader configuration retrieved.',
+                    'data' => [
+                        'reader1' => (string) ($xml->reader1 ?? ''),
+                        'reader3' => (string) ($xml->reader3 ?? ''),
+                        'door_access_mode' => (string) ($xml->{'door-access-mode'} ?? ''),
+                        'door_entry_exit_mode' => (string) ($xml->{'door-entry-exit-mode'} ?? ''),
+                        'reader_access_mode' => (string) ($xml->{'reader-access-mode'} ?? ''),
+                        'reader_entry_exit_mode' => (string) ($xml->{'reader-entry-exit-mode'} ?? ''),
+                        'tag_re_detect_delay' => (string) ($xml->{'tag-re-detect-delay'} ?? ''),
+                    ],
+                ];
+            }
+
+            return ['success' => false, 'message' => 'Failed to parse reader config XML', 'data' => []];
+        } catch (\Exception $e) {
+            return ['success' => false, 'message' => $e->getMessage(), 'data' => []];
+        }
+    }
+
+    /**
+     * Set Reader Configuration on Matrix device (e.g. enable external exit reader).
+     */
+    public function setReaderConfig(Device $device, array $params = []): array
+    {
+        $baseUrl = $this->buildBaseUrl($device);
+        $auth = [$device->username ?? 'admin', $device->password ?? '1234'];
+
+        $queryParams = array_merge([
+            'action' => 'set',
+            'format' => 'xml',
+        ], $params);
+
+        try {
+            $response = Http::withDigestAuth(...$auth)
+                ->timeout(5)
+                ->get("{$baseUrl}/device.cgi/reader-config", $queryParams);
+
+            return $this->parseResponse($response->body(), $response->status(), 'Reader configuration updated successfully.');
+        } catch (\Exception $e) {
+            return ['success' => false, 'message' => 'Failed to update reader config: ' . $e->getMessage(), 'code' => null];
+        }
+    }
+
+    /**
+     * Fetch event logs from Matrix device.
+     */
+    public function getEventLogs(Device $device, int $seqNumber = 1, int $count = 20, int $rollOver = 0): array
+    {
+        $baseUrl = $this->buildBaseUrl($device);
+        $auth = [$device->username ?? 'admin', $device->password ?? '1234'];
+
+        try {
+            $response = Http::withDigestAuth(...$auth)
+                ->timeout(10)
+                ->get("{$baseUrl}/device.cgi/events", [
+                    'action' => 'getevent',
+                    'roll-over-count' => $rollOver,
+                    'seq-number' => $seqNumber,
+                    'no-of-events' => $count,
+                    'format' => 'xml',
+                ]);
+
+            if ($response->status() === 401) {
+                return ['success' => false, 'message' => 'Authentication failed (401)', 'events' => []];
+            }
+
+            $body = $response->body();
+            $xml = @simplexml_load_string($body);
+            $events = [];
+            if ($xml && isset($xml->Events)) {
+                foreach ($xml->Events as $ev) {
+                    $events[] = [
+                        'seq' => (string) $ev->{'seq-No'},
+                        'date' => (string) $ev->date,
+                        'time' => (string) $ev->time,
+                        'event_id' => (string) $ev->{'event-id'},
+                        'detail_1' => (string) $ev->{'detail-1'},
+                        'detail_2' => (string) $ev->{'detail-2'},
+                        'detail_3' => (string) $ev->{'detail-3'},
+                    ];
+                }
+            }
+
+            return ['success' => true, 'events' => $events, 'raw' => $body];
+        } catch (\Exception $e) {
+            return ['success' => false, 'message' => $e->getMessage(), 'events' => []];
+        }
+    }
+
+    /**
+     * Matrix represents an unassigned card as 0; keep that blank in the UI.
+     */
+    protected function cardValueFromResponse(?\SimpleXMLElement $value): string
+    {
+        $card = trim((string) $value);
+
+        return $card === '0' ? '' : $card;
     }
 
     /**

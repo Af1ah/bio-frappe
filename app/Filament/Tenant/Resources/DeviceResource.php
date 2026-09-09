@@ -15,7 +15,9 @@ use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
 use Filament\Forms\Components\CheckboxList;
 use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
+use App\Services\Attendance\MatrixDeviceService;
 use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Section;
@@ -380,6 +382,139 @@ class DeviceResource extends Resource
                                 ->body($cmd->response ?: 'Enrollment mode activated on Matrix device.')
                                 ->status($cmd->status === 'failed' ? 'danger' : 'success')
                                 ->send();
+                        }),
+                    Action::make('configureReader')
+                        ->label('Configure External / Exit Reader')
+                        ->icon('heroicon-o-arrow-right-on-rectangle')
+                        ->color('warning')
+                        ->visible(fn (Device $record) => $record->vendor === 'matrix')
+                        ->mountUsing(function ($form, Device $record) {
+                            $matrixSvc = app(MatrixDeviceService::class);
+                            $cfg = $matrixSvc->getReaderConfig($record);
+                            $reader3 = $cfg['data']['reader3'] ?? '1';
+                            $entryExit = $cfg['data']['reader_entry_exit_mode'] ?? '1';
+                            $accessMode = $cfg['data']['reader_access_mode'] ?? '6';
+
+                            $form->fill([
+                                'reader3' => $reader3,
+                                'reader_entry_exit_mode' => $entryExit,
+                                'reader_access_mode' => $accessMode,
+                            ]);
+                        })
+                        ->form([
+                            Select::make('reader3')
+                                ->label('External Reader Type')
+                                ->options([
+                                    '0' => '0 - None (Disabled)',
+                                    '1' => '1 - EM Proximity Reader (COSEC PATH RDCE)',
+                                    '2' => '2 - HID Prox Reader',
+                                    '3' => '3 - MiFare Reader (COSEC PATH RDCM)',
+                                    '4' => '4 - HID iCLASS-U Reader',
+                                    '5' => '5 - Finger Reader (COSEC PATH RDFE)',
+                                    '6' => '6 - HID iCLASS-W Reader',
+                                    '7' => '7 - UHF Reader',
+                                    '8' => '8 - Combo Exit Reader',
+                                    '9' => '9 - MiFare-W Reader',
+                                ])
+                                ->helperText('For Matrix COSEC PATH RDCE, select Option 1.')
+                                ->required(),
+                            Select::make('reader_entry_exit_mode')
+                                ->label('Reader Function / Mode')
+                                ->options([
+                                    '1' => 'Exit Reader',
+                                    '0' => 'Entry Reader',
+                                ])
+                                ->default('1')
+                                ->required(),
+                            Select::make('reader_access_mode')
+                                ->label('Access Authentication Mode')
+                                ->options([
+                                    '6' => 'Any (Card or Biometric)',
+                                    '0' => 'Card Only',
+                                    '1' => 'Fingerprint Only',
+                                    '4' => 'Card + Fingerprint',
+                                    '12' => 'Fingerprint then Card',
+                                ])
+                                ->default('6')
+                                ->required(),
+                        ])
+                        ->action(function (Device $record, array $data) {
+                            $matrixSvc = app(MatrixDeviceService::class);
+                            $res = $matrixSvc->setReaderConfig($record, [
+                                'reader3' => (int) $data['reader3'],
+                                'reader-entry-exit-mode' => (int) $data['reader_entry_exit_mode'],
+                                'reader-access-mode' => (int) $data['reader_access_mode'],
+                            ]);
+
+                            if ($res['success']) {
+                                Notification::make()
+                                    ->title('External Reader Configured')
+                                    ->body("External reader successfully set to type {$data['reader3']} (" . ($data['reader_entry_exit_mode'] === '1' ? 'Exit' : 'Entry') . ").")
+                                    ->success()
+                                    ->send();
+                            } else {
+                                Notification::make()
+                                    ->title('Failed to Configure Reader')
+                                    ->body($res['message'])
+                                    ->danger()
+                                    ->persistent()
+                                    ->send();
+                            }
+                        }),
+                    Action::make('viewDeviceLogs')
+                        ->label('View Device Event Logs')
+                        ->icon('heroicon-o-clipboard-document-list')
+                        ->color('gray')
+                        ->visible(fn (Device $record) => $record->vendor === 'matrix')
+                        ->modalHeading('Recent Device Event Logs (Hardware Logs)')
+                        ->modalSubmitAction(false)
+                        ->modalCancelActionLabel('Close')
+                        ->action(function () {})
+                        ->form(function (Device $record) {
+                            $matrixSvc = app(MatrixDeviceService::class);
+                            $countRes = $matrixSvc->getEventCount($record);
+                            $lines = [];
+
+                            if (! $countRes['success']) {
+                                $lines[] = 'Unable to retrieve device event count: ' . $countRes['message'];
+
+                                return [
+                                    Textarea::make('logs')
+                                        ->label('Recent Device Events (Directly from Device Hardware)')
+                                        ->rows(14)
+                                        ->default(implode("\n", $lines))
+                                        ->disabled(),
+                                ];
+                            }
+
+                            $seq = max(1, $countRes['sequence'] - 15);
+                            $logRes = $matrixSvc->getEventLogs($record, $seq, 20, $countRes['rollover']);
+                            if (!empty($logRes['events'])) {
+                                foreach (array_reverse($logRes['events']) as $ev) {
+                                    $eventName = match ($ev['event_id']) {
+                                        '101' => 'User Allowed (Access Granted)',
+                                        '151', '152', '153', '154', '163', '164' => 'User Access Denied',
+                                        '402' => 'Login / Web Access Event',
+                                        '405' => 'Biometric / Card Enrollment',
+                                        '409' => 'Credentials Deleted',
+                                        '457' => 'System Configuration Defaulted',
+                                        default => "Event ID: {$ev['event_id']}",
+                                    };
+                                    $lines[] = "[{$ev['date']} {$ev['time']}] #{$ev['seq']} - {$eventName} | User: " . ($ev['detail_1'] ?: 'None') . " | Detail: {$ev['detail_2']}/{$ev['detail_3']}";
+                                }
+                            } else {
+                                $lines[] = $logRes['success']
+                                    ? 'No event records retrieved from device.'
+                                    : 'Unable to retrieve device events: ' . $logRes['message'];
+                            }
+
+                            return [
+                                Textarea::make('logs')
+                                    ->label('Recent Device Events (Directly from Device Hardware)')
+                                    ->rows(14)
+                                    ->default(implode("\n", $lines))
+                                    ->disabled(),
+                            ];
                         }),
                     Action::make('getInfo')
                         ->label('Get Device Info')
