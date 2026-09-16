@@ -277,6 +277,32 @@ class UserResource extends Resource
             ])
             ->recordActions([
                 \Filament\Actions\ActionGroup::make([
+                    \Filament\Actions\Action::make('enrollOnDirectDevice')
+                        ->label('Enroll on Direct Device')
+                        ->icon('heroicon-o-user-plus')
+                        ->visible(fn (): bool => DeviceResource::directDeviceOptions() !== [])
+                        ->requiresConfirmation()
+                        ->form([
+                            Select::make('device_id')
+                                ->label('Device')
+                                ->options(fn (): array => DeviceResource::directDeviceOptions())
+                                ->searchable()
+                                ->required(),
+                        ])
+                        ->action(function (User $record, array $data): void {
+                            \App\Jobs\DirectDeviceDataSyncJob::dispatch(
+                                tenant(),
+                                (int) $data['device_id'],
+                                'push_users',
+                                [$record->id],
+                            );
+
+                            \Filament\Notifications\Notification::make()
+                                ->title('Enrollment queued')
+                                ->body("{$record->name} will be enrolled on the selected device.")
+                                ->success()
+                                ->send();
+                        }),
                     \Filament\Actions\Action::make('addBiometric')
                         ->label('Add Biometric')
                         ->icon('heroicon-o-finger-print')

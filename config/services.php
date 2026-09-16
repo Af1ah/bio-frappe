@@ -40,4 +40,13 @@ return [
         'api_key' => env('WHATSAPP_API_KEY'),
     ],
 
+    // Private management API on the Go ADMS gateway. This is never a
+    // device-facing URL and must be configured with a scoped secret.
+    'device_gateway' => [
+        'url' => env('DEVICE_GATEWAY_URL'),
+        'token' => env('DEVICE_GATEWAY_TOKEN'),
+        'device_host' => env('ADMS_DEVICE_HOST', parse_url(env('APP_URL', 'http://localhost'), PHP_URL_HOST)),
+        'device_port' => (int) env('ADMS_DEVICE_PORT', env('ADMS_PORT', 8080)),
+    ],
+
 ];

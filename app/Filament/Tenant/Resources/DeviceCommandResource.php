@@ -147,7 +147,10 @@ class DeviceCommandResource extends Resource
                         ->icon('heroicon-o-arrow-path')
                         ->color('warning')
                         ->visible(fn (DeviceCommand $record) => in_array($record->status, ['failed', 'sent']))
-                        ->action(fn (DeviceCommand $record) => $record->retry()),
+                        ->action(function (DeviceCommand $record): void {
+                            $record->retry();
+                            app(\App\Services\DeviceCommandDispatcher::class)->dispatch($record->device, $record);
+                        }),
                     DeleteAction::make(),
                 ])
             ])

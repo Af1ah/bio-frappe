@@ -4,6 +4,7 @@ namespace App\Filament\Tenant\Resources\UserResource\Pages;
 
 use Filament\Actions;
 use Filament\Resources\Pages\ListRecords;
+use App\Filament\Tenant\Resources\DeviceResource;
 use App\Filament\Tenant\Resources\UserResource;
 
 class ListUsers extends ListRecords
@@ -14,6 +15,26 @@ class ListUsers extends ListRecords
     {
         return [
             Actions\CreateAction::make(),
+            Actions\Action::make('fetchDirectDeviceUsers')
+                ->label('Fetch Device Users')
+                ->icon('heroicon-o-users')
+                ->visible(fn (): bool => DeviceResource::directDeviceOptions() !== [])
+                ->form([
+                    \Filament\Forms\Components\Select::make('device_id')
+                        ->label('Device')
+                        ->options(fn (): array => DeviceResource::directDeviceOptions())
+                        ->searchable()
+                        ->required(),
+                ])
+                ->action(function (array $data): void {
+                    \App\Jobs\DirectDeviceDataSyncJob::dispatch(tenant(), (int) $data['device_id'], 'users');
+
+                    \Filament\Notifications\Notification::make()
+                        ->title('User fetch queued')
+                        ->body('Users and enrolled fingers will be fetched from the selected device.')
+                        ->success()
+                        ->send();
+                }),
             Actions\Action::make('syncEbioUsers')
                 ->label('Sync from eBioServer')
                 ->icon('heroicon-o-arrow-path')

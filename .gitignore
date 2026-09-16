@@ -19,7 +19,10 @@
 /storage/*.key
 /storage/pail
 /vendor
-/reference
+/reference/*
+!/reference/docs/
+/reference/docs/*
+!/reference/docs/*.md
 Homestead.json
 Homestead.yaml
 Thumbs.db

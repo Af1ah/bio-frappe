@@ -1,5 +1,17 @@
 # Bio-Notifier
 
+## Project reference: V1 and V2
+
+The approved direction extends Bio-Notifier with a Go ADMS device gateway, reliable attendance, leaves and payroll. V1 covers device migration and basic payroll; V2 covers deeper payroll/currency policies and general improvements. These documents describe planned work, not features already shipped.
+
+- [Migration plan and four checkpoints](reference/docs/migration-plan.md)
+- [Device API, tenant isolation, HTTP ingress and recovery](reference/docs/device-api-and-tenancy.md)
+- [Attendance, leave, holidays, OT and payroll automation](reference/docs/attendance-leave-and-payroll.md)
+- [Coding standards and agent rules](AGENTS.md)
+
+The existing feature/setup material below describes the legacy implementation and may contain outdated capability or performance claims. Use the reference documents and installed dependencies when planning the migration.
+
+
 Bio-Notifier is a powerful, modern, multi-tenant middleware designed to seamlessly bridge the gap between physical biometric attendance hardware (eSSL / eBio Server) and real-time communication platforms. 
 
 Built on Laravel and the Filament admin panel, it acts as a centralized notification engine that intercepts attendance punches and instantly alerts employees via WhatsApp. Furthermore, it aggregates this data to compile comprehensive attendance reports.

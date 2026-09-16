@@ -14,15 +14,62 @@ services:
         environment:
             WWWUSER: '${WWWUSER}'
             LARAVEL_SAIL: 1
+            DB_HOST: pgsql
+            DB_PORT: 5432
             XDEBUG_MODE: '${SAIL_XDEBUG_MODE:-off}'
             XDEBUG_CONFIG: '${SAIL_XDEBUG_CONFIG:-client_host=host.docker.internal}'
             IGNITION_LOCAL_SITES_PATH: '${PWD}'
+            DEVICE_GATEWAY_URL: 'http://adms-gateway:8080'
+            DEVICE_GATEWAY_TOKEN: '${DEVICE_GATEWAY_TOKEN}'
         volumes:
             - '.:/var/www/html'
         networks:
             - sail
         depends_on:
             - pgsql
+            - adms-gateway
+    queue:
+        image: 'sail-8.5/app'
+        command: php artisan queue:work database --sleep=1 --tries=3 --timeout=180
+        restart: unless-stopped
+        environment:
+            DB_HOST: pgsql
+            DB_PORT: 5432
+            DEVICE_GATEWAY_URL: 'http://adms-gateway:8080'
+            DEVICE_GATEWAY_TOKEN: '${DEVICE_GATEWAY_TOKEN}'
+        volumes:
+            - '.:/var/www/html'
+        networks:
+            - sail
+        depends_on:
+            pgsql:
+                condition: service_healthy
+            adms-gateway:
+                condition: service_started
+    scheduler:
+        image: 'sail-8.5/app'
+        command: php artisan schedule:work
+        restart: unless-stopped
+        environment:
+            DB_HOST: pgsql
+            DB_PORT: 5432
+        volumes:
+            - '.:/var/www/html'
+        networks:
+            - sail
+        depends_on:
+            pgsql:
+                condition: service_healthy
+    adms-gateway:
+        build:
+            context: ./gateway
+            dockerfile: Dockerfile
+        environment:
+            ADMS_MANAGEMENT_TOKEN: '${DEVICE_GATEWAY_TOKEN}'
+        ports:
+            - '${ADMS_PORT:-8080}:8080'
+        networks:
+            - sail
     pgsql:
         image: 'postgres:18-alpine'
         ports:

@@ -59,11 +59,11 @@ class ListDeviceCommands extends ListRecords
                     $command = \App\Models\DeviceCommand::create([
                         'device_id' => $device->id,
                         'command_type' => $data['command'],
-                        'command_content' => "eBioServer SOAP Command: {$data['command']}",
+                        'command_content' => "Device command: {$data['command']}",
                         'status' => 'pending',
                     ]);
 
-                    \App\Jobs\EbioDeviceCommandJob::dispatch(tenant(), $device->serial_number, $data['command'], $command->id);
+                    app(\App\Services\DeviceCommandDispatcher::class)->dispatch($device, $command);
                     
                     \Filament\Notifications\Notification::make()
                         ->title('Command Queued')

@@ -1,5 +1,8 @@
 # Bio-Notifier Development Agenda & Quick Reference
 
+> Migration guidance updated 2026-09-15: read [AGENTS.md](AGENTS.md) and [the V1/V2 plan](reference/docs/migration-plan.md) first. The notes below describe the legacy eBio implementation. Their Filament 3 references are outdated (current dependency: Filament 4). The SOAP-only rule below is superseded for the approved staged Go ADMS migration; retain SOAP behavior for devices still using the eBio adapter.
+
+
 ## 1. Project Overview
 **Bio-Notifier** is a multi-tenant Laravel 12 application using Filament v3 for administration. It manages biometric attendance devices, synchronizes users/fingerprints/faces, and triggers notifications (e.g., WAHA WhatsApp API) based on real-time attendance logs.
 

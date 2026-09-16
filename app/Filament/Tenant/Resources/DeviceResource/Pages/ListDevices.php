@@ -89,11 +89,11 @@ class ListDevices extends ListRecords
                     $command = \App\Models\DeviceCommand::create([
                         'device_id' => $device->id,
                         'command_type' => $data['command'],
-                        'command_content' => "eBioServer SOAP Command: {$data['command']}",
+                        'command_content' => "Device command: {$data['command']}",
                         'status' => 'pending',
                     ]);
 
-                    \App\Jobs\EbioDeviceCommandJob::dispatch(tenant(), $device->serial_number, $data['command'], $command->id);
+                    app(\App\Services\DeviceCommandDispatcher::class)->dispatch($device, $command);
                     
                     \Filament\Notifications\Notification::make()
                         ->title('Command Queued')
@@ -104,7 +104,7 @@ class ListDevices extends ListRecords
             Actions\CreateAction::make()
                 ->label('Add Device')
                 ->icon('heroicon-o-plus')
-                ->modalHeading('Add New Device to eBioServer')
+                ->modalHeading('Add New Device')
                 ->form([
                     \Filament\Schemas\Components\Grid::make(2)->schema([
                         \Filament\Forms\Components\TextInput::make('serial_number')
@@ -114,16 +114,26 @@ class ListDevices extends ListRecords
                         \Filament\Forms\Components\TextInput::make('name')
                             ->required()
                             ->label('Device Name'),
+                        \Filament\Forms\Components\TextInput::make('ip_address')
+                            ->label('Device IP Address')
+                            ->ipv4(),
                         \Filament\Forms\Components\TextInput::make('location')
                             ->required()
                             ->label('Location'),
                         \Filament\Forms\Components\Select::make('direction')
-                            ->options(['IN' => 'IN', 'OUT' => 'OUT', 'OTHER' => 'OTHER'])
+                            ->options([
+                                'IN' => 'IN',
+                                'OUT' => 'OUT',
+                                'ALTERNATE_IN_OUT' => 'Alternate IN/OUT',
+                                'DEVICE_STATE' => 'State from device',
+                            ])
+                            ->default('ALTERNATE_IN_OUT')
                             ->required()
-                            ->label('Direction'),
+                            ->label('Direction / State'),
                         \Filament\Forms\Components\TextInput::make('device_type')
                             ->default('Attendance')
-                            ->required()
+                            ->visible(fn (callable $get): bool => ! (bool) $get('adms_enabled'))
+                            ->required(fn (callable $get): bool => ! (bool) $get('adms_enabled'))
                             ->label('Device Type'),
                         \Filament\Forms\Components\TextInput::make('time_zone')
                             ->default('Asia/Kolkata')
@@ -137,39 +147,69 @@ class ListDevices extends ListRecords
                             ->default('true')
                             ->required()
                             ->label('Is Attendance Device'),
+                        DeviceResource::admsToggle('adms_enabled')
+                            ->columnSpanFull(),
                     ])
                 ])
                 ->using(function (array $data, string $model): \Illuminate\Database\Eloquent\Model {
-                    $service = new \App\Services\EbioSoapService();
-                    
-                    try {
-                        $success = $service->addDevice(tenant(), $data);
-                        if (!$success) {
-                            throw new \Exception("eBioServer API rejected the device addition.");
+                    $usesStandaloneAdms = (bool) ($data['adms_enabled'] ?? false);
+
+                    if (! $usesStandaloneAdms) {
+                        $service = new \App\Services\EbioSoapService();
+
+                        try {
+                            $success = $service->addDevice(tenant(), $data);
+                            if (! $success) {
+                                throw new \Exception("eBioServer API rejected the device addition.");
+                            }
+                        } catch (\Exception $e) {
+                            \Filament\Notifications\Notification::make()
+                                ->title('Add Device Failed')
+                                ->body($e->getMessage())
+                                ->danger()
+                                ->send();
+
+                            throw \Illuminate\Validation\ValidationException::withMessages([
+                                'serial_number' => $e->getMessage(),
+                            ]);
                         }
-                    } catch (\Exception $e) {
-                        \Filament\Notifications\Notification::make()
-                            ->title('Add Device Failed')
-                            ->body($e->getMessage())
-                            ->danger()
-                            ->send();
-                        
-                        throw \Illuminate\Validation\ValidationException::withMessages([
-                            'serial_number' => $e->getMessage()
-                        ]);
                     }
 
-                    return $model::create([
+                    $device = $model::create([
                         'serial_number' => $data['serial_number'],
                         'name' => $data['name'],
+                        'ip_address' => $data['ip_address'] ?? null,
                         'status' => 'offline',
                         'options' => [
                             'location' => $data['location'],
                             'direction' => $data['direction'],
-                            'type' => $data['device_type'],
+                            'type' => $data['device_type'] ?? 'Attendance',
                             'timezone' => $data['time_zone'],
+                            'adms_enabled' => $usesStandaloneAdms,
                         ]
                     ]);
+
+                    if ($usesStandaloneAdms) {
+                        try {
+                            app(\App\Services\DeviceGateway\RegisterGoAdmsDevice::class)->register(
+                                $device,
+                                tenancy()->tenant->id,
+                                $data['time_zone'],
+                            );
+                        } catch (\Throwable $exception) {
+                            $device->delete();
+                            \App\Models\DeviceBinding::query()
+                                ->where('tenant_id', tenancy()->tenant->id)
+                                ->where('serial_number', $data['serial_number'])
+                                ->update(['is_active' => false]);
+
+                            throw \Illuminate\Validation\ValidationException::withMessages([
+                                'serial_number' => 'The standalone ADMS gateway did not accept this device.',
+                            ]);
+                        }
+                    }
+
+                    return $device;
                 }),
         ];
     }

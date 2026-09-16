@@ -34,7 +34,9 @@ class TenancyServiceProvider extends ServiceProvider
 
                 ])->send(function (Events\TenantCreated $event) {
                     return $event->tenant;
-                })->shouldBeQueued(app()->isProduction()), // Automatically queue in production
+                // Provisioning creates a database and runs all tenant migrations. Keep that
+                // work off the request path in every environment.
+                })->shouldBeQueued(true),
             ],
             Events\SavingTenant::class => [],
             Events\TenantSaved::class => [],
@@ -46,7 +48,7 @@ class TenancyServiceProvider extends ServiceProvider
                     Jobs\DeleteDatabase::class,
                 ])->send(function (Events\TenantDeleted $event) {
                     return $event->tenant;
-                })->shouldBeQueued(app()->isProduction()), // Automatically queue in production
+                })->shouldBeQueued(true),
             ],
 
             // Domain events

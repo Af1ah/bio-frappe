@@ -9,6 +9,7 @@ use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
+use Filament\Forms\Components\Toggle;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
@@ -29,6 +30,19 @@ class DeviceResource extends Resource
 
     protected static \UnitEnum|string|null $navigationGroup = 'Device Management';
 
+    /** @return array<int, string> */
+    public static function directDeviceOptions(): array
+    {
+        return Device::query()
+            ->orderBy('name')
+            ->get()
+            ->filter(fn (Device $device): bool => (bool) data_get($device->options, 'adms_enabled', false))
+            ->mapWithKeys(fn (Device $device): array => [
+                $device->id => "{$device->name} ({$device->serial_number})",
+            ])
+            ->all();
+    }
+
     //
 
     public static function canCreate(): bool
@@ -38,7 +52,7 @@ class DeviceResource extends Resource
 
     public static function canEdit(\Illuminate\Database\Eloquent\Model $record): bool
     {
-        return false;
+        return true;
     }
 
     public static function canDelete(\Illuminate\Database\Eloquent\Model $record): bool
@@ -57,6 +71,77 @@ class DeviceResource extends Resource
                 ->label('Last Ping')
                 ->dateTime(),
         ]);
+    }
+
+    public static function form(Schema $schema): Schema
+    {
+        return $schema
+            ->columns(1)
+            ->components([
+            Section::make('Device')
+                ->schema([
+                    \Filament\Schemas\Components\Grid::make(2)->schema([
+                        TextInput::make('serial_number')
+                            ->label('Serial Number')
+                            ->disabled(),
+                        TextInput::make('name')
+                            ->label('Device Name')
+                            ->required(),
+                        TextInput::make('ip_address')
+                            ->label('Device IP Address')
+                            ->ipv4(),
+                        TextInput::make('options.location')
+                            ->label('Location')
+                            ->required(),
+                        Select::make('options.direction')
+                            ->options([
+                                'IN' => 'IN',
+                                'OUT' => 'OUT',
+                                'ALTERNATE_IN_OUT' => 'Alternate IN/OUT',
+                                'DEVICE_STATE' => 'State from device',
+                                'OTHER' => 'Other (legacy)',
+                            ])
+                            ->default('ALTERNATE_IN_OUT')
+                            ->label('Direction / State')
+                            ->required(),
+                        TextInput::make('options.type')
+                            ->label('Device Type')
+                            ->default('Attendance')
+                            ->visible(fn (callable $get): bool => ! (bool) $get('options.adms_enabled'))
+                            ->required(fn (callable $get): bool => ! (bool) $get('options.adms_enabled')),
+                        TextInput::make('options.timezone')
+                            ->label('Time Zone')
+                            ->default('Asia/Kolkata')
+                            ->required(),
+                        TextInput::make('options.activation_code')
+                            ->label('Activation Code')
+                            ->default('0'),
+                        Select::make('options.is_attendance_device')
+                            ->options(['true' => 'Yes', 'false' => 'No'])
+                            ->label('Is Attendance Device')
+                            ->default('true')
+                            ->required(),
+                        static::admsToggle()
+                            ->columnSpanFull(),
+                    ]),
+                ])
+                ->columnSpanFull(),
+        ]);
+    }
+
+    public static function admsToggle(string $statePath = 'options.adms_enabled'): Toggle
+    {
+        $host = (string) config('services.device_gateway.device_host');
+        $port = (string) config('services.device_gateway.device_port');
+
+        return Toggle::make($statePath)
+            ->label('Enable standalone ADMS')
+            ->default(false)
+            ->live()
+            ->hintIcon(
+                'heroicon-m-question-mark-circle',
+                "Device server: {$host}:{$port}",
+            );
     }
 
     public static function table(Table $table): Table
@@ -106,7 +191,21 @@ class DeviceResource extends Resource
             ])
             ->recordActions([
                 \Filament\Actions\ActionGroup::make([
-                    ViewAction::make(),
+                    EditAction::make(),
+                    \Filament\Actions\Action::make('syncTime')
+                        ->label('Sync Device Time')
+                        ->icon('heroicon-o-clock')
+                        ->visible(fn (Device $record): bool => (bool) data_get($record->options, 'adms_enabled', false))
+                        ->requiresConfirmation()
+                        ->action(function (Device $record): void {
+                            $command = \App\Models\DeviceCommand::create([
+                                'device_id' => $record->id,
+                                'command_type' => 'sync_time',
+                                'command_content' => 'Direct command: sync device time',
+                                'status' => 'pending',
+                            ]);
+                            app(\App\Services\DeviceCommandDispatcher::class)->dispatch($record, $command);
+                        }),
                     \Filament\Actions\Action::make('reboot')
                         ->label('Reboot Device')
                         ->icon('heroicon-o-power')
@@ -115,10 +214,10 @@ class DeviceResource extends Resource
                             $command = \App\Models\DeviceCommand::create([
                                 'device_id' => $record->id,
                                 'command_type' => 'reboot',
-                                'command_content' => 'eBioServer SOAP Command: reboot',
+                                'command_content' => 'Device command: reboot',
                                 'status' => 'pending',
                             ]);
-                            \App\Jobs\EbioDeviceCommandJob::dispatch(tenancy()->tenant, $record->serial_number, 'reboot', $command->id);
+                            app(\App\Services\DeviceCommandDispatcher::class)->dispatch($record, $command);
                             \Filament\Notifications\Notification::make()
                                 ->title('Command Queued')
                                 ->body('Reboot command queued.')
@@ -134,10 +233,10 @@ class DeviceResource extends Resource
                             $command = \App\Models\DeviceCommand::create([
                                 'device_id' => $record->id,
                                 'command_type' => 'clear_logs',
-                                'command_content' => 'eBioServer SOAP Command: clear_logs',
+                                'command_content' => 'Device command: clear_logs',
                                 'status' => 'pending',
                             ]);
-                            \App\Jobs\EbioDeviceCommandJob::dispatch(tenancy()->tenant, $record->serial_number, 'clear_logs', $command->id);
+                            app(\App\Services\DeviceCommandDispatcher::class)->dispatch($record, $command);
                             \Filament\Notifications\Notification::make()
                                 ->title('Command Queued')
                                 ->body('Clear logs command queued.')
@@ -152,10 +251,10 @@ class DeviceResource extends Resource
                             $command = \App\Models\DeviceCommand::create([
                                 'device_id' => $record->id,
                                 'command_type' => 'reset_transaction_stamp',
-                                'command_content' => 'eBioServer SOAP Command: reset_transaction_stamp',
+                                'command_content' => 'Device command: reset_transaction_stamp',
                                 'status' => 'pending',
                             ]);
-                            \App\Jobs\EbioDeviceCommandJob::dispatch(tenancy()->tenant, $record->serial_number, 'reset_transaction_stamp', $command->id);
+                            app(\App\Services\DeviceCommandDispatcher::class)->dispatch($record, $command);
                             \Filament\Notifications\Notification::make()
                                 ->title('Command Queued')
                                 ->body('Reset transaction stamp command queued.')
@@ -170,10 +269,10 @@ class DeviceResource extends Resource
                             $command = \App\Models\DeviceCommand::create([
                                 'device_id' => $record->id,
                                 'command_type' => 'reset_op_stamp',
-                                'command_content' => 'eBioServer SOAP Command: reset_op_stamp',
+                                'command_content' => 'Device command: reset_op_stamp',
                                 'status' => 'pending',
                             ]);
-                            \App\Jobs\EbioDeviceCommandJob::dispatch(tenancy()->tenant, $record->serial_number, 'reset_op_stamp', $command->id);
+                            app(\App\Services\DeviceCommandDispatcher::class)->dispatch($record, $command);
                             \Filament\Notifications\Notification::make()
                                 ->title('Command Queued')
                                 ->body('Reset OP stamp command queued.')
@@ -188,10 +287,10 @@ class DeviceResource extends Resource
                             $command = \App\Models\DeviceCommand::create([
                                 'device_id' => $record->id,
                                 'command_type' => 'unlock_door',
-                                'command_content' => 'eBioServer SOAP Command: unlock_door',
+                                'command_content' => 'Device command: unlock_door',
                                 'status' => 'pending',
                             ]);
-                            \App\Jobs\EbioDeviceCommandJob::dispatch(tenancy()->tenant, $record->serial_number, 'unlock_door', $command->id);
+                            app(\App\Services\DeviceCommandDispatcher::class)->dispatch($record, $command);
                             \Filament\Notifications\Notification::make()
                                 ->title('Command Queued')
                                 ->body('Unlock door command queued.')
@@ -215,6 +314,7 @@ class DeviceResource extends Resource
         return [
             'index' => Pages\ListDevices::route('/'),
             'view' => Pages\ViewDevice::route('/{record}'),
+            'edit' => Pages\EditDevice::route('/{record}/edit'),
         ];
     }
 }
