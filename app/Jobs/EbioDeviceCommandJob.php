@@ -2,6 +2,8 @@
 
 namespace App\Jobs;
 
+use App\Models\Device;
+use App\Models\DeviceCommand;
 use App\Models\Organisation;
 use App\Services\EbioSoapService;
 use Illuminate\Bus\Queueable;
@@ -16,8 +18,11 @@ class EbioDeviceCommandJob implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public $organisation;
+
     public $serialNumber;
+
     public $commandType;
+
     public $commandId;
 
     public function __construct(Organisation $organisation, string $serialNumber, string $commandType, ?int $commandId = null)
@@ -33,8 +38,10 @@ class EbioDeviceCommandJob implements ShouldQueue
         tenancy()->initialize($this->organisation);
         $commandModel = null;
         if ($this->commandId) {
-            $commandModel = \App\Models\DeviceCommand::find($this->commandId);
-            if ($commandModel) $commandModel->markAsSent();
+            $commandModel = DeviceCommand::find($this->commandId);
+            if ($commandModel) {
+                $commandModel->markAsSent();
+            }
         }
 
         try {
@@ -48,12 +55,24 @@ class EbioDeviceCommandJob implements ShouldQueue
                     break;
                 case 'reset_transaction_stamp':
                     $success = $service->resetTransactionStamp($this->organisation, $this->serialNumber);
+                    if ($success) {
+                        Device::where('serial_number', $this->serialNumber)->update(['att_stamp' => 0]);
+                    }
                     break;
                 case 'reset_op_stamp':
                     $success = $service->resetOPStamp($this->organisation, $this->serialNumber);
+                    if ($success) {
+                        Device::where('serial_number', $this->serialNumber)->update(['op_stamp' => 0]);
+                    }
                     break;
                 case 'unlock_door':
                     $success = $service->unlockDoor($this->organisation, $this->serialNumber);
+                    break;
+                case 'lock_door':
+                    $success = $service->lockDoor($this->organisation, $this->serialNumber);
+                    break;
+                case 'normal_door':
+                    $success = $service->normalDoor($this->organisation, $this->serialNumber);
                     break;
                 default:
                     Log::warning("Unknown device command type: {$this->commandType}");
@@ -68,11 +87,13 @@ class EbioDeviceCommandJob implements ShouldQueue
                 }
             }
         } catch (\Exception $e) {
-            Log::error("Failed to execute device command {$this->commandType} on {$this->serialNumber}: " . $e->getMessage());
+            Log::error("Failed to execute device command {$this->commandType} on {$this->serialNumber}: ".$e->getMessage());
             if ($commandModel) {
                 $commandModel->markAsFailed($e->getMessage());
             }
             $this->fail($e);
+        } finally {
+            tenancy()->end();
         }
     }
 }

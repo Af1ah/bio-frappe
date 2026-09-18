@@ -2,9 +2,16 @@
 
 namespace App\Filament\Tenant\Resources\DeviceCommandResource\Pages;
 
-use Filament\Actions;
-use Filament\Resources\Pages\ListRecords;
 use App\Filament\Tenant\Resources\DeviceCommandResource;
+use App\Models\Device;
+use App\Models\DeviceCommand;
+use App\Services\DeviceCommandCapabilities;
+use App\Services\DeviceCommandDispatcher;
+use Filament\Actions;
+use Filament\Forms\Components\Select;
+use Filament\Forms\Components\TextInput;
+use Filament\Notifications\Notification;
+use Filament\Resources\Pages\ListRecords;
 
 class ListDeviceCommands extends ListRecords
 {
@@ -18,29 +25,27 @@ class ListDeviceCommands extends ListRecords
                 ->icon('heroicon-o-command-line')
                 ->color('primary')
                 ->form([
-                    \Filament\Forms\Components\Select::make('device_id')
+                    Select::make('device_id')
                         ->label('Select Device')
                         ->options(function () {
-                            return \App\Models\Device::all()->mapWithKeys(function ($d) {
+                            return Device::all()->mapWithKeys(function ($d) {
                                 return [$d->id => $d->name ?: $d->serial_number];
                             });
                         })
                         ->required()
                         ->live()
                         ->afterStateUpdated(fn (callable $set) => $set('command', null))
-                        ->default(fn () => \App\Models\Device::count() === 1 ? \App\Models\Device::first()->id : null),
-                        \Filament\Forms\Components\Select::make('command')
+                        ->default(fn () => Device::count() === 1 ? Device::first()->id : null),
+                    Select::make('command')
                         ->label('Select Command')
                         ->live()
-                        ->options([
-                            'reboot' => 'Reboot Device',
-                            'clear_logs' => 'CRITICAL: Clear Attendance Logs',
-                            'reset_transaction_stamp' => 'Reset Transaction Stamp',
-                            'reset_op_stamp' => 'Reset OP Stamp',
-                            'unlock_door' => 'Unlock Door',
-                        ])
+                        ->options(function (callable $get): array {
+                            $device = $get('device_id') ? Device::find($get('device_id')) : null;
+
+                            return $device ? app(DeviceCommandCapabilities::class)->options($device) : [];
+                        })
                         ->required(),
-                    \Filament\Forms\Components\TextInput::make('confirm')
+                    TextInput::make('confirm')
                         ->label("Type 'CONFIRM' to execute this command")
                         ->required()
                         ->rule(function () {
@@ -50,22 +55,24 @@ class ListDeviceCommands extends ListRecords
                                 }
                             };
                         })
-                        ->hidden(fn ($get) => !in_array($get('command'), ['clear_logs', 'reboot'])),
+                        ->hidden(fn ($get) => ! in_array($get('command'), ['clear_logs', 'reboot'])),
                 ])
                 ->action(function (array $data) {
-                    $device = \App\Models\Device::find($data['device_id']);
-                    if (!$device) return;
+                    $device = Device::find($data['device_id']);
+                    if (! $device) {
+                        return;
+                    }
 
-                    $command = \App\Models\DeviceCommand::create([
+                    $command = DeviceCommand::create([
                         'device_id' => $device->id,
                         'command_type' => $data['command'],
                         'command_content' => "Device command: {$data['command']}",
                         'status' => 'pending',
                     ]);
 
-                    app(\App\Services\DeviceCommandDispatcher::class)->dispatch($device, $command);
-                    
-                    \Filament\Notifications\Notification::make()
+                    app(DeviceCommandDispatcher::class)->dispatch($device, $command);
+
+                    Notification::make()
                         ->title('Command Queued')
                         ->body("The '{$data['command']}' command has been queued for sync.")
                         ->success()

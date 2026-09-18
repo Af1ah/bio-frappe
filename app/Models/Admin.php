@@ -2,12 +2,15 @@
 
 namespace App\Models;
 
-use Illuminate\Foundation\Auth\User as Authenticatable;
 use Filament\Models\Contracts\FilamentUser;
 use Filament\Panel;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Laravel\Sanctum\HasApiTokens;
 
 class Admin extends Authenticatable implements FilamentUser
 {
+    use HasApiTokens;
+
     protected $table = 'users';
 
     protected $fillable = [

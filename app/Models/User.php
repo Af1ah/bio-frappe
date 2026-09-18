@@ -3,12 +3,15 @@
 namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
+use App\Casts\EncryptedArrayCast;
+use App\Casts\EncryptedStringCast;
+use Carbon\Carbon;
 use Database\Factories\UserFactory;
+use Filament\Models\Contracts\FilamentUser;
+use Filament\Panel;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
-use Filament\Models\Contracts\FilamentUser;
-use Filament\Panel;
 
 class User extends Authenticatable implements FilamentUser
 {
@@ -59,11 +62,60 @@ class User extends Authenticatable implements FilamentUser
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'is_enabled' => 'boolean',
-            'fingerprints' => 'array',
-            'face_templates' => 'array',
+            'device_password' => EncryptedStringCast::class,
+            'fingerprints' => EncryptedArrayCast::class,
+            'face_templates' => EncryptedArrayCast::class,
+            'face_v2_templates' => EncryptedArrayCast::class,
             'requires_password_change' => 'boolean',
             'blocked_devices' => 'array',
         ];
+    }
+
+    public function deviceUsers()
+    {
+        return $this->hasMany(DeviceUser::class, 'pin', 'pin');
+    }
+
+    public function hasFingerprints(): bool
+    {
+        return ! empty($this->fingerprints);
+    }
+
+    public function hasFace(): bool
+    {
+        return ! empty($this->face_templates);
+    }
+
+    public function hasFaceV2(): bool
+    {
+        return ! empty($this->face_v2_templates);
+    }
+
+    public function hasCard(): bool
+    {
+        return filled($this->card_number);
+    }
+
+    public function hasDevicePassword(): bool
+    {
+        return filled($this->device_password);
+    }
+
+    /** @return array<string> */
+    public function enrolledCredentialTypes(): array
+    {
+        $types = ['pin'];
+        if ($this->hasCard()) {
+            $types[] = 'card';
+        }
+        if ($this->hasFingerprints()) {
+            $types[] = 'fingerprint';
+        }
+        if ($this->hasFace() || $this->hasFaceV2()) {
+            $types[] = 'face';
+        }
+
+        return $types;
     }
 
     public function attendanceLogs()
@@ -107,7 +159,7 @@ class User extends Authenticatable implements FilamentUser
             && filled($this->password);
     }
 
-    public function getActiveSchedule(?\Carbon\Carbon $date = null)
+    public function getActiveSchedule(?Carbon $date = null)
     {
         $date = $date ?? now();
 
@@ -122,7 +174,9 @@ class User extends Authenticatable implements FilamentUser
             })
             ->first();
 
-        if ($groupSchedule) return $groupSchedule;
+        if ($groupSchedule) {
+            return $groupSchedule;
+        }
 
         if ($this->department_id) {
             $deptSchedule = Schedule::where('status', true)
@@ -135,8 +189,10 @@ class User extends Authenticatable implements FilamentUser
                     $query->whereNull('valid_to')->orWhere('valid_to', '>=', $date);
                 })
                 ->first();
-            
-            if ($deptSchedule) return $deptSchedule;
+
+            if ($deptSchedule) {
+                return $deptSchedule;
+            }
         }
 
         if ($this->branch_id) {
@@ -150,8 +206,10 @@ class User extends Authenticatable implements FilamentUser
                     $query->whereNull('valid_to')->orWhere('valid_to', '>=', $date);
                 })
                 ->first();
-            
-            if ($branchSchedule) return $branchSchedule;
+
+            if ($branchSchedule) {
+                return $branchSchedule;
+            }
         }
 
         return Schedule::where('status', true)

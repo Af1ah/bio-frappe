@@ -2,6 +2,8 @@
 
 namespace App\Jobs;
 
+use App\Models\Device;
+use App\Models\DeviceCommand;
 use App\Models\Organisation;
 use App\Services\Attendance\DirectDeviceCommandService;
 use Illuminate\Bus\Queueable;
@@ -24,12 +26,10 @@ class DirectDeviceCommandJob implements ShouldQueue
     public function handle(DirectDeviceCommandService $service): void
     {
         tenancy()->initialize($this->organisation);
-
-        $command = \App\Models\DeviceCommand::findOrFail($this->commandId);
-        $device = \App\Models\Device::findOrFail($this->deviceId);
-        $command->markAsSent();
-
         try {
+            $command = DeviceCommand::findOrFail($this->commandId);
+            $device = Device::findOrFail($this->deviceId);
+            $command->markAsSent();
             $result = $service->execute($device, $command->command_type);
 
             if ($result['status']) {
@@ -40,9 +40,11 @@ class DirectDeviceCommandJob implements ShouldQueue
 
             $command->markAsFailed($result['message']);
         } catch (Throwable $exception) {
-            $command->markAsFailed('Direct command failed.');
+            DeviceCommand::find($this->commandId)?->markAsFailed('Direct command failed.');
 
             throw $exception;
+        } finally {
+            tenancy()->end();
         }
     }
 }

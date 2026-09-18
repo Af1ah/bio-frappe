@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Carbon;
 
@@ -80,8 +81,54 @@ class Device extends Model
         ]);
     }
 
-    public function branch(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    public function branch(): BelongsTo
     {
         return $this->belongsTo(Branch::class);
+    }
+
+    protected static function booted(): void
+    {
+        static::saving(function (Device $device) {
+            $options = $device->options ?? [];
+            $type = data_get($options, 'type', $device->device_type);
+            if ($type) {
+                $isDoor = in_array(strtolower((string) $type), ['door', 'door based', 'attendance_door'], true);
+                $options['type'] = $type;
+                $options['is_door_based'] = $isDoor;
+                $device->options = $options;
+                $device->device_type = (string) $type;
+            }
+        });
+    }
+
+    public function isDoorBased(): bool
+    {
+        $type = data_get($this->options, 'type', $this->device_type);
+        if (in_array(strtolower((string) $type), ['door', 'door based', 'attendance_door'], true)) {
+            return true;
+        }
+
+        return (bool) data_get($this->options, 'is_door_based', false);
+    }
+
+    public function deviceUsers(): HasMany
+    {
+        return $this->hasMany(DeviceUser::class);
+    }
+
+    /** @return array<string> */
+    public function supportedEnrollmentMethods(): array
+    {
+        $methods = data_get($this->options, 'enrollment_methods');
+        if (is_array($methods) && ! empty($methods)) {
+            return array_values($methods);
+        }
+
+        return ['fingerprint', 'rfid'];
+    }
+
+    public function supportsEnrollment(string $method): bool
+    {
+        return in_array($method, $this->supportedEnrollmentMethods(), true);
     }
 }

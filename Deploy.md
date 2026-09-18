@@ -38,9 +38,14 @@ curl -sS https://getcomposer.org/installer | php
 sudo mv composer.phar /usr/local/bin/composer
 ```
 
-**6. Install Supervisor (for Background Queues):**
+**6. Install Supervisor (for Background Queues & Gateway):**
 ```bash
 sudo apt install supervisor -y
+```
+
+**7. Install Go (1.22+ for ADMS Gateway):**
+```bash
+sudo apt install golang-go -y
 ```
 
 ## Step-by-Step Deployment
@@ -99,6 +104,12 @@ php artisan tenants:migrate --force
 php artisan make:filament-user
 ```
 
+4. **Issue Go ADMS Gateway Token:**
+```bash
+php artisan device-gateway:issue-token <admin-email>
+```
+Store the resulting token in `.env` as `LARAVEL_GATEWAY_TOKEN`.
+
 ### 5. Optimize Caches
 To ensure your production application runs as fast as possible, cache your configurations, routes, and views:
 ```bash
@@ -113,20 +124,27 @@ php artisan storage:link
 sudo chown -R www-data:www-data storage bootstrap/cache
 ```
 
-### 7. Configure Supervisor for Queue Worker
+### 7. Configure Background Services (Queue Worker & Go ADMS Gateway)
 
-To ensure the queue worker (like WhatsApp notifications) runs continuously in the background, use Supervisor:
+Both the Laravel queue worker and the Go ADMS gateway should be managed by Supervisor.
 
-1. Create a new configuration file:
+#### A. Build the Go ADMS Gateway Binary
 ```bash
-sudo nano /etc/supervisor/conf.d/bio-notifier-worker.conf
+cd /var/www/html/gateway
+go build -o /usr/local/bin/adms-gateway .
 ```
 
-2. Add the following configuration (replace `/var/www/html` with your exact project path, e.g. `/var/www/bio-notifier`):
+#### B. Supervisor Configuration
+Create the supervisor config file:
+```bash
+sudo nano /etc/supervisor/conf.d/bio-notifier.conf
+```
+
+Add both programs (replace `/var/www/html` and environment values with your actual settings):
 ```ini
 [program:bio-notifier-worker]
 process_name=%(program_name)s_%(process_num)02d
-command=php /var/www/html/artisan queue:work --sleep=3 --tries=3 --max-time=3600
+command=php /var/www/html/artisan queue:work database --sleep=1 --tries=3 --timeout=180
 autostart=true
 autorestart=true
 stopasgroup=true
@@ -135,14 +153,26 @@ user=www-data
 numprocs=1
 redirect_stderr=true
 stdout_logfile=/var/www/html/storage/logs/worker.log
-stopwaitsecs=3600
+
+[program:bio-notifier-gateway]
+command=/usr/local/bin/adms-gateway
+environment=ADMS_MANAGEMENT_TOKEN="%(ENV_DEVICE_GATEWAY_TOKEN)s",LARAVEL_INTERNAL_URL="http://127.0.0.1:80",LARAVEL_GATEWAY_TOKEN="%(ENV_LARAVEL_GATEWAY_TOKEN)s",ADMS_STORE_PATH="/var/www/html/storage/gateway.db",ADMS_DEVICE_ADDR=":8080",ADMS_MANAGEMENT_ADDR=":8081"
+autostart=true
+autorestart=true
+stopasgroup=true
+killasgroup=true
+user=www-data
+numprocs=1
+redirect_stderr=true
+stdout_logfile=/var/www/html/storage/logs/gateway.log
 ```
 
-3. Read the new configuration and start the worker:
+#### C. Start Services
 ```bash
 sudo supervisorctl reread
 sudo supervisorctl update
 sudo supervisorctl start bio-notifier-worker:*
+sudo supervisorctl start bio-notifier-gateway:*
 ```
 
 ### 8. Web Server Configuration (Nginx & Multi-Tenancy)
@@ -209,70 +239,54 @@ sudo systemctl restart nginx
 
 ### 9. Environment Variables (.env)
 
-Make sure your `.env` contains the correct routing information so the system knows how to build tenant URLs correctly.
+Ensure your `.env` contains the correct routing and gateway settings:
 
 ```env
 APP_URL=https://noti.ariise.cloud
 CENTRAL_DOMAIN=noti.ariise.cloud
+
+# Go ADMS Gateway configuration
+DEVICE_GATEWAY_URL=http://127.0.0.1:8081
+DEVICE_GATEWAY_TOKEN=your-random-shared-secret
+LARAVEL_GATEWAY_TOKEN=your-sanctum-token-issued-by-artisan
+ADMS_PORT=8080
+ADMS_DEVICE_HOST=noti.ariise.cloud
+ADMS_DEVICE_PORT=8080
 ```
-*Note: Setting `CENTRAL_DOMAIN` guarantees that when you create a tenant named "client1", their URL becomes `client1.noti.ariise.cloud` perfectly without stacking extra domains.*
+- `DEVICE_GATEWAY_URL`: Internal URL Laravel uses to send commands to the Go gateway (port `8081`).
+- `DEVICE_GATEWAY_TOKEN`: Shared secret for internal Laravel-to-Gateway requests.
+- `LARAVEL_GATEWAY_TOKEN`: Scoped Sanctum token Go uses to deliver punches/events back to Laravel.
 
 ## Configuring the Attendance Devices
 
-Once your application is live on your domain (e.g. `https://zkteco.ariise.cloud`), you need to configure your physical ZKTeco attendance devices.
+On physical biometric devices (ZKTeco / eSSL), navigate to **Cloud Server Settings** / **ADMS Settings**:
+- **Server Address:** Your server IP or domain (e.g. `noti.ariise.cloud`)
+- **Server Port:** `8080` (or `80`/`443` if routed through Nginx reverse proxy)
+- **Server URL:** Leave blank or `/` (do NOT append `/api` or `/iclock`)
 
-On the device menu, navigate to **Cloud Server Settings** or **ADMS Settings** and enter:
-- **Server Address:** `zkteco.ariise.cloud`
-- **Server Port:** `443` (if using HTTPS) or `80`
-- **Server URL / Domain:** `http://zkteco.ariise.cloud` (or just `zkteco.ariise.cloud` if the device asks for Server Address)
+## Docker Compose Support (All-in-One)
 
-> [!WARNING]
-> Do **not** add `/api` to the end of the URL! We recently updated the architecture to handle biometric requests directly on the root domain (e.g., `/iclock/cdata`). If your device firmware asks for a "Server Address", simply enter your domain without `http://` or `/iclock`.
+The project includes `compose.yaml` to spin up all 5 services simultaneously:
+1. `pgsql` (PostgreSQL 18 database)
+2. `adms-gateway` (Go standalone ADMS device server on port 8080)
+3. `laravel.test` (Laravel web application on port 80)
+4. `queue` (Laravel database queue worker)
+5. `scheduler` (Laravel task scheduler)
 
-## Docker Support (Local & Development)
-
-Docker support has been added to the project via Laravel Sail. This makes it incredibly easy to spin up the application without installing PHP or PostgreSQL directly on your local machine.
-
-### Prerequisites for Docker
-- Docker Engine
-- Docker Compose
-
-### Getting Started with Docker
-
-1. **Clone the repository:**
+### Quick Run with Docker Compose:
 ```bash
-git clone https://github.com/Af1ah/bio-notifier.git
-cd bio-notifier
-```
-
-2. **Install Composer Dependencies (using a small Docker container):**
-```bash
-docker run --rm \
-    -u "$(id -u):$(id -g)" \
-    -v "$(pwd):/var/www/html" \
-    -w /var/www/html \
-    laravelsail/php82-composer:latest \
-    composer install --ignore-platform-reqs
-```
-
-3. **Configure Environment:**
-```bash
+# 1. Setup environment
 cp .env.example .env
-```
-Make sure your `.env` contains the Sail DB settings (e.g. `DB_HOST=pgsql`).
 
-4. **Start the Docker Containers:**
-```bash
-./vendor/bin/sail up -d
-```
+# 2. Start services
+docker compose up -d
 
-5. **Run Migrations & Generate Key:**
-```bash
-./vendor/bin/sail artisan key:generate
-./vendor/bin/sail artisan migrate
-```
+# 3. Initialize database & token
+docker compose exec laravel.test php artisan key:generate
+docker compose exec laravel.test php artisan migrate
+docker compose exec laravel.test php artisan tenants:migrate
+docker compose exec laravel.test php artisan device-gateway:issue-token <admin-email>
 
-Your application will now be accessible at `http://localhost`. To stop the containers, simply run:
-```bash
-./vendor/bin/sail down
+# 4. Stop services
+docker compose down
 ```

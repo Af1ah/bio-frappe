@@ -2,9 +2,9 @@
 
 namespace App\Filament\Tenant\Resources\DeviceCommandResource\Pages;
 
+use App\Filament\Tenant\Resources\DeviceCommandResource;
 use Filament\Actions;
 use Filament\Resources\Pages\ViewRecord;
-use App\Filament\Tenant\Resources\DeviceCommandResource;
 
 class ViewDeviceCommand extends ViewRecord
 {

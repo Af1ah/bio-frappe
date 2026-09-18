@@ -1,8 +1,14 @@
 <?php
 
+use App\Http\Middleware\InitializeTenancyForLivewire;
+use App\Http\Middleware\LogAllRequests;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Request;
+use Laravel\Sanctum\Http\Middleware\CheckAbilities;
+use Laravel\Sanctum\Http\Middleware\CheckForAnyAbility;
+use Stancl\Tenancy\Exceptions\TenantCouldNotBeIdentifiedOnDomainException;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -13,16 +19,20 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->trustProxies(at: '*');
-        
+
         $middleware->validateCsrfTokens(except: [
             'iclock/*',
             'login',
         ]);
-        $middleware->prependToGroup('web', \App\Http\Middleware\InitializeTenancyForLivewire::class);
-        $middleware->append(\App\Http\Middleware\LogAllRequests::class);
+        $middleware->alias([
+            'abilities' => CheckAbilities::class,
+            'ability' => CheckForAnyAbility::class,
+        ]);
+        $middleware->prependToGroup('web', InitializeTenancyForLivewire::class);
+        $middleware->append(LogAllRequests::class);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        $exceptions->render(function (\Stancl\Tenancy\Exceptions\TenantCouldNotBeIdentifiedOnDomainException $e, \Illuminate\Http\Request $request) {
+        $exceptions->render(function (TenantCouldNotBeIdentifiedOnDomainException $e, Request $request) {
             abort(404, 'Tenant not found');
         });
     })->create();

@@ -2,19 +2,21 @@
 
 namespace App\Filament\Tenant\Resources\DeviceResource\Pages;
 
-use Filament\Actions;
-use Filament\Resources\Pages\EditRecord;
-use Filament\Support\Enums\Width;
+use App\Enums\DeviceTransport;
 use App\Filament\Tenant\Resources\DeviceResource;
 use App\Models\DeviceBinding;
 use App\Services\DeviceGateway\RegisterGoAdmsDevice;
+use App\Services\EbioSoapService;
+use Filament\Actions;
+use Filament\Resources\Pages\EditRecord;
+use Filament\Support\Enums\Width;
 use Illuminate\Validation\ValidationException;
 
 class EditDevice extends EditRecord
 {
     protected static string $resource = DeviceResource::class;
 
-    protected Width | string | null $maxContentWidth = Width::Full;
+    protected Width|string|null $maxContentWidth = Width::Full;
 
     protected function getHeaderActions(): array
     {
@@ -23,11 +25,22 @@ class EditDevice extends EditRecord
         ];
     }
 
+    /** @param array<string, mixed> $data */
+    protected function mutateFormDataBeforeFill(array $data): array
+    {
+        $options = $data['options'] ?? [];
+        $options['connection_mode'] ??= DeviceTransport::forDevice($this->record)->value;
+        $options['source_cidr'] ??= $this->record->ip_address;
+        $data['options'] = $options;
+
+        return $data;
+    }
+
     protected function afterSave(): void
     {
-        $isAdmsEnabled = (bool) data_get($this->record->options, 'adms_enabled', false);
+        $connectionMode = DeviceTransport::forDevice($this->record);
 
-        if ($isAdmsEnabled) {
+        if ($connectionMode === DeviceTransport::Adms) {
             try {
                 app(RegisterGoAdmsDevice::class)->register(
                     $this->record,
@@ -36,7 +49,7 @@ class EditDevice extends EditRecord
                 );
             } catch (\Throwable $exception) {
                 $options = $this->record->options ?? [];
-                $options['adms_enabled'] = false;
+                $options['connection_mode'] = 'direct';
                 $this->record->update(['options' => $options]);
 
                 throw $exception;
@@ -56,9 +69,14 @@ class EditDevice extends EditRecord
     {
         $options = $data['options'] ?? [];
 
-        if (! (bool) data_get($options, 'adms_enabled', false)) {
+        if (blank($options['source_cidr'] ?? null) && filled($data['ip_address'] ?? null)) {
+            $options['source_cidr'] = $data['ip_address'];
+            $data['options'] = $options;
+        }
+
+        if (($options['connection_mode'] ?? 'ebio') === 'ebio') {
             try {
-                $updated = app(\App\Services\EbioSoapService::class)->addDevice(tenant(), [
+                $updated = app(EbioSoapService::class)->addDevice(tenant(), [
                     'serial_number' => $this->record->serial_number,
                     'name' => $data['name'],
                     'location' => data_get($options, 'location'),

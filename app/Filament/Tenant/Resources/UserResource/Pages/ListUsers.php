@@ -2,10 +2,22 @@
 
 namespace App\Filament\Tenant\Resources\UserResource\Pages;
 
-use Filament\Actions;
-use Filament\Resources\Pages\ListRecords;
+use App\Enums\DeviceTransport;
 use App\Filament\Tenant\Resources\DeviceResource;
 use App\Filament\Tenant\Resources\UserResource;
+use App\Jobs\DirectDeviceDataSyncJob;
+use App\Jobs\SyncEbioUsersJob;
+use App\Models\Device;
+use App\Models\DeviceCommand;
+use App\Models\User;
+use App\Services\DeviceCommandDispatcher;
+use Filament\Actions;
+use Filament\Forms\Components\FileUpload;
+use Filament\Forms\Components\Select;
+use Filament\Notifications\Notification;
+use Filament\Resources\Pages\ListRecords;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\HtmlString;
 
 class ListUsers extends ListRecords
 {
@@ -18,18 +30,29 @@ class ListUsers extends ListRecords
             Actions\Action::make('fetchDirectDeviceUsers')
                 ->label('Fetch Device Users')
                 ->icon('heroicon-o-users')
-                ->visible(fn (): bool => DeviceResource::directDeviceOptions() !== [])
+                ->visible(fn (): bool => DeviceResource::userFetchDeviceOptions() !== [])
                 ->form([
-                    \Filament\Forms\Components\Select::make('device_id')
+                    Select::make('device_id')
                         ->label('Device')
-                        ->options(fn (): array => DeviceResource::directDeviceOptions())
+                        ->options(fn (): array => DeviceResource::userFetchDeviceOptions())
                         ->searchable()
                         ->required(),
                 ])
                 ->action(function (array $data): void {
-                    \App\Jobs\DirectDeviceDataSyncJob::dispatch(tenant(), (int) $data['device_id'], 'users');
+                    $device = Device::findOrFail((int) $data['device_id']);
+                    if (DeviceTransport::forDevice($device) === DeviceTransport::Adms) {
+                        $command = DeviceCommand::create([
+                            'device_id' => $device->id,
+                            'command_type' => 'fetch_users',
+                            'command_content' => 'Fetch users from device',
+                            'status' => 'pending',
+                        ]);
+                        app(DeviceCommandDispatcher::class)->dispatch($device, $command);
+                    } else {
+                        DirectDeviceDataSyncJob::dispatch(tenant(), $device->id, 'users');
+                    }
 
-                    \Filament\Notifications\Notification::make()
+                    Notification::make()
                         ->title('User fetch queued')
                         ->body('Users and enrolled fingers will be fetched from the selected device.')
                         ->success()
@@ -44,15 +67,15 @@ class ListUsers extends ListRecords
                 ->modalDescription('This will connect to your eBioServer over the local network and pull all registered users. This may take a few moments depending on the number of users.')
                 ->action(function () {
                     try {
-                        \App\Jobs\SyncEbioUsersJob::dispatch(tenancy()->tenant);
-                        
-                        \Filament\Notifications\Notification::make()
+                        SyncEbioUsersJob::dispatch(tenancy()->tenant);
+
+                        Notification::make()
                             ->title('Sync Queued')
-                            ->body("User synchronization has been queued and will run in the background.")
+                            ->body('User synchronization has been queued and will run in the background.')
                             ->success()
                             ->send();
                     } catch (\Exception $e) {
-                        \Filament\Notifications\Notification::make()
+                        Notification::make()
                             ->title('Sync Failed')
                             ->body($e->getMessage())
                             ->danger()
@@ -65,13 +88,13 @@ class ListUsers extends ListRecords
                 ->color('info')
                 ->modalHeading('Import Users')
                 ->modalDescription(function () {
-                    $csvContent = "pin,name,email,card_number,privilege,device_password,is_enabled,branch_id,department_id,group\n" .
-                                  "1001,amal das,,,,,,,,\n" .
+                    $csvContent = "pin,name,email,card_number,privilege,device_password,is_enabled,branch_id,department_id,group\n".
+                                  "1001,amal das,,,,,,,,\n".
                                   "1002,shamil ,shamil@example.com,12345678,0,1234,1,1,2,Staff\n";
                     $base64Csv = base64_encode($csvContent);
                     $dataUri = "data:text/csv;base64,{$base64Csv}";
-                    
-                    return new \Illuminate\Support\HtmlString('
+
+                    return new HtmlString('
                         <div class="mb-4">
                             <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
                                 <p class="text-sm text-gray-600 dark:text-gray-400" style="flex: 1; min-width: 250px; margin: 0;">
@@ -91,19 +114,20 @@ class ListUsers extends ListRecords
                     ');
                 })
                 ->form([
-                    \Filament\Forms\Components\FileUpload::make('file')
+                    FileUpload::make('file')
                         ->label('CSV File')
                         ->acceptedFileTypes(['text/csv', 'application/csv', 'text/x-csv', 'application/vnd.ms-excel', 'text/plain'])
                         ->disk('local')
                         ->directory('imports')
                         ->required()
-                        ->storeFiles(true)
+                        ->storeFiles(true),
                 ])
                 ->action(function (array $data) {
-                    $filePath = \Illuminate\Support\Facades\Storage::disk('local')->path($data['file']);
-                    
-                    if (!file_exists($filePath) || !is_readable($filePath)) {
-                        \Filament\Notifications\Notification::make()->title('File not found or unreadable.')->danger()->send();
+                    $filePath = Storage::disk('local')->path($data['file']);
+
+                    if (! file_exists($filePath) || ! is_readable($filePath)) {
+                        Notification::make()->title('File not found or unreadable.')->danger()->send();
+
                         return;
                     }
 
@@ -111,8 +135,10 @@ class ListUsers extends ListRecords
                     $users = [];
                     if (($handle = fopen($filePath, 'r')) !== false) {
                         while (($row = fgetcsv($handle, 1000, ',')) !== false) {
-                            if (!$header) {
-                                $header = array_map(function($h) { return trim(strtolower($h)); }, $row);
+                            if (! $header) {
+                                $header = array_map(function ($h) {
+                                    return trim(strtolower($h));
+                                }, $row);
                             } else {
                                 if (count($header) == count($row)) {
                                     $users[] = array_combine($header, $row);
@@ -121,29 +147,30 @@ class ListUsers extends ListRecords
                         }
                         fclose($handle);
                     }
-                    
+
                     $successCount = 0;
                     $errorCount = 0;
-                    
+
                     foreach ($users as $userData) {
                         if (empty($userData['pin']) || empty($userData['name'])) {
                             $errorCount++;
+
                             continue;
                         }
-                        
-                        $existingUser = \App\Models\User::where('pin', $userData['pin'])->first();
-                        
+
+                        $existingUser = User::where('pin', $userData['pin'])->first();
+
                         $userAttributes = [
                             'name' => $userData['name'],
                         ];
-                        
+
                         $fields = ['email', 'card_number', 'device_password', 'group'];
                         foreach ($fields as $field) {
                             if (isset($userData[$field]) && $userData[$field] !== '') {
                                 $userAttributes[$field] = $userData[$field];
                             }
                         }
-                        
+
                         if (isset($userData['privilege']) && $userData['privilege'] !== '') {
                             $userAttributes['privilege'] = (int) $userData['privilege'];
                         }
@@ -156,25 +183,25 @@ class ListUsers extends ListRecords
                         if (isset($userData['department_id']) && $userData['department_id'] !== '') {
                             $userAttributes['department_id'] = (int) $userData['department_id'];
                         }
-                        
+
                         try {
                             if ($existingUser) {
                                 $existingUser->update($userAttributes);
                             } else {
                                 $userAttributes['pin'] = $userData['pin'];
-                                \App\Models\User::create($userAttributes);
+                                User::create($userAttributes);
                             }
                             $successCount++;
                         } catch (\Exception $e) {
                             $errorCount++;
                         }
                     }
-                    
+
                     @unlink($filePath);
-                    
-                    \Filament\Notifications\Notification::make()
+
+                    Notification::make()
                         ->title('Import Complete')
-                        ->body("Successfully imported {$successCount} users." . ($errorCount > 0 ? " {$errorCount} failed." : ""))
+                        ->body("Successfully imported {$successCount} users.".($errorCount > 0 ? " {$errorCount} failed." : ''))
                         ->status($errorCount > 0 ? 'warning' : 'success')
                         ->send();
                 }),

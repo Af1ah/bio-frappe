@@ -15,6 +15,7 @@ class DeviceBinding extends Model
     protected $casts = [
         'capability_profile' => 'array',
         'is_active' => 'boolean',
+        'last_seen_at' => 'datetime',
     ];
 
     public function getConnectionName()

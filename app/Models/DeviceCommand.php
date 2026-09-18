@@ -26,6 +26,7 @@ class DeviceCommand extends Model
     protected $casts = [
         'sent_at' => 'datetime',
         'acknowledged_at' => 'datetime',
+        'expires_at' => 'datetime',
     ];
 
     public function getTable(): string
@@ -43,6 +44,7 @@ class DeviceCommand extends Model
         $this->update([
             'status' => 'sent',
             'sent_at' => now(),
+            'delivery_status' => 'sent',
         ]);
     }
 
@@ -52,6 +54,7 @@ class DeviceCommand extends Model
             'status' => 'acknowledged',
             'acknowledged_at' => now(),
             'response' => $response,
+            'delivery_status' => 'acknowledged',
         ]);
     }
 
@@ -60,6 +63,7 @@ class DeviceCommand extends Model
         $this->update([
             'status' => 'failed',
             'response' => $response,
+            'delivery_status' => 'failed',
         ]);
     }
 
@@ -67,6 +71,9 @@ class DeviceCommand extends Model
     {
         $this->update([
             'status' => 'pending',
+            'delivery_status' => 'queued',
+            'external_id' => null,
+            'protocol_command_id' => null,
             'retry_count' => $this->retry_count + 1,
         ]);
     }

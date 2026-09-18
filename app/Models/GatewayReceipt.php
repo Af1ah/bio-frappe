@@ -14,6 +14,8 @@ class GatewayReceipt extends Model
 
     protected $casts = [
         'received_at' => 'datetime',
+        'delivered_at' => 'datetime',
+        'query' => 'array',
         'routing_metadata' => 'array',
     ];
 

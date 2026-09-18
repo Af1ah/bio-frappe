@@ -2,9 +2,9 @@
 
 namespace App\Filament\Tenant\Resources\DeviceCommandResource\Pages;
 
-use Filament\Resources\Pages\CreateRecord;
 use App\Filament\Tenant\Resources\DeviceCommandResource;
 use App\Services\DeviceCommandDispatcher;
+use Filament\Resources\Pages\CreateRecord;
 
 class CreateDeviceCommand extends CreateRecord
 {

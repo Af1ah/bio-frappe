@@ -52,38 +52,67 @@ Built on Laravel and the Filament admin panel, it acts as a centralized notifica
 For production deployments, please refer to the detailed [Deploy.md](./Deploy.md) guide included in this repository. 
 For a complete architectural overview and implementation guidelines, refer to the [Guide.md](./Guide.md) file.
 
-### Local Development (via Docker/Sail)
+## ⚙️ Running Locally (Developer Quick Start)
 
-Docker support has been added to the project via Laravel Sail.
+Bio-Notifier consists of 4 services that need to run concurrently:
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/Af1ah/bio-notifier.git bio-notifier
-   cd bio-notifier
-   ```
+| Service | Directory | Command | Port | Purpose |
+|---|---|---|---|---|
+| **1. Database (PostgreSQL)** | Root | `docker compose up -d pgsql` (or local PostgreSQL) | `5433` (or `5432`) | Central and tenant databases |
+| **2. Web App (Laravel)** | Root | `php artisan serve --port=8000` | `8000` | Admin panels and internal APIs |
+| **3. Queue Worker** | Root | `php artisan queue:work database --sleep=1 --tries=3 --timeout=180` | - | Processes attendance punches, notifications, commands |
+| **4. ADMS Device Gateway** | `gateway/` | `go run .` | `8080` (devices), `8081` (internal API) | Biometric hardware communication & durable buffering |
 
-2. **Install Composer Dependencies:**
-   ```bash
-   docker run --rm \
-       -u "$(id -u):$(id -g)" \
-       -v "$(pwd):/var/www/html" \
-       -w /var/www/html \
-       laravelsail/php82-composer:latest \
-       composer install --ignore-platform-reqs
-   ```
+### Step-by-Step Setup
 
-3. **Configure Environment:**
+1. **Environment & Dependencies**
    ```bash
    cp .env.example .env
-   # Make sure to update WHATSAPP_API_KEY and WHATSAPP_INSTANCE_NAME
+   composer install
+   php artisan key:generate
+   ```
+   Ensure `.env` has your database credentials, `DEVICE_GATEWAY_TOKEN`, and `DEVICE_GATEWAY_URL=http://127.0.0.1:8081`.
+
+2. **Database Migrations**
+   ```bash
+   php artisan migrate
+   php artisan tenants:migrate
    ```
 
-4. **Start the Environment & Run Migrations:**
+3. **Issue Gateway Token**
+   Generate a scoped Sanctum token for the Go gateway:
    ```bash
-   ./vendor/bin/sail up -d
-   ./vendor/bin/sail artisan key:generate
-   ./vendor/bin/sail artisan migrate
+   php artisan device-gateway:issue-token admin@gmail.com
    ```
+   Copy the output token into `.env` as `LARAVEL_GATEWAY_TOKEN`.
+
+4. **Start the Services**
+   - **Terminal 1 (Laravel App):**
+     ```bash
+     php artisan serve --port=8000
+     ```
+   - **Terminal 2 (Queue Worker):**
+     ```bash
+     php artisan queue:work database --sleep=1 --tries=3 --timeout=180
+     ```
+   - **Terminal 3 (Go ADMS Gateway):**
+     ```bash
+     cd gateway
+     ADMS_MANAGEMENT_TOKEN="bio-notifier-dev-only-change-me" \
+     LARAVEL_INTERNAL_URL="http://127.0.0.1:8000" \
+     LARAVEL_GATEWAY_TOKEN="<your_token>" \
+     ADMS_STORE_PATH="../storage/gateway.db" \
+     ADMS_DEVICE_ADDR=":8080" \
+     ADMS_MANAGEMENT_ADDR=":8081" \
+     go run .
+     ```
+
+### Testing Endpoints
+
+- **Master Admin Panel:** `http://127.0.0.1:8000/master`
+- **Tenant Admin Panel:** `http://127.0.0.1:8000/{tenant}/admin` (e.g. `http://127.0.0.1:8000/secumax/admin`)
+- **ADMS Device Ingress:** `http://<YOUR_IP>:8080/iclock/cdata` (Health check: `http://127.0.0.1:8080/health`)
+- **Gateway Management API:** `http://127.0.0.1:8081/internal/v1/...` (Private, authenticated)
 
 ## 📝 License
 This project is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).

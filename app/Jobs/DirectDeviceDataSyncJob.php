@@ -32,22 +32,22 @@ class DirectDeviceDataSyncJob implements ShouldQueue
     {
         tenancy()->initialize($this->organisation);
 
-        $device = Device::findOrFail($this->deviceId);
-        $result = match ($this->operation) {
-            'users' => $service->syncUsersFromDevice($device),
-            'logs' => $service->syncAttendanceLogs($device),
-            'push_users' => $service->pushUsersToDevice($device, User::query()->whereKey($this->userIds)->get()),
-            default => throw new RuntimeException("Unknown direct device operation: {$this->operation}"),
-        };
+        try {
+            $device = Device::findOrFail($this->deviceId);
+            $result = match ($this->operation) {
+                'users' => $service->syncUsersFromDevice($device),
+                'logs' => $service->syncAttendanceLogs($device),
+                'push_users' => $service->pushUsersToDevice($device, User::query()->whereKey($this->userIds)->get()),
+                default => throw new RuntimeException("Unknown direct device operation: {$this->operation}"),
+            };
 
-        if (! $result['status']) {
-            throw new RuntimeException($result['message']);
+            if (! $result['status']) {
+                throw new RuntimeException($result['message']);
+            }
+
+            $device->update(['status' => 'online', 'last_activity_at' => now(), 'last_sync_at' => now()]);
+        } finally {
+            tenancy()->end();
         }
-
-        $device->update([
-            'status' => 'online',
-            'last_activity_at' => now(),
-            'last_sync_at' => now(),
-        ]);
     }
 }
