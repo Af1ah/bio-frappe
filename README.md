@@ -95,22 +95,76 @@ Built on Laravel 12 and Filament v3, Bio-Frappe captures real-time biometric pun
    php artisan queue:work
    ```
 
+### 🐳 Docker Quick Start (Single Dockerfile & Compose)
+
+Bio-Frappe features a unified, single `Dockerfile` with multi-role execution (web, queue worker, scheduler daemon, or all-in-one).
+
+1. **Start all containers (App, Worker, Scheduler, PostgreSQL):**
+   ```bash
+   docker compose up -d --build
+   ```
+
+2. **Run Migrations & Create Initial Admin:**
+   ```bash
+   # Run central database migrations
+   docker compose exec app php artisan migrate --force
+
+   # Run all tenant database migrations
+   docker compose exec app php artisan tenants:migrate --force
+
+   # Create Filament Admin user
+   docker compose exec app php artisan make:filament-user
+   ```
+
+3. **Check Running Containers & Logs:**
+   ```bash
+   docker compose ps
+   docker compose logs -f app
+   docker compose logs -f worker
+   docker compose logs -f scheduler
+   ```
+
+4. **Stop Containers:**
+   ```bash
+   docker compose down
+   ```
+
 ---
 
-## ⏱️ Auto-Sync & Manual Commands
+## 🛠️ Daily Operational Commands
 
-Bio-Frappe includes an automated command to poll devices, sync checkins to Frappe HR, and trigger auto-attendance:
+A quick cheat-sheet for running and managing Bio-Frappe in daily production operations:
 
-```bash
-# Fetch online devices, push unsynced checkins, and trigger Shift Type attendance:
-php artisan attendance:auto-sync --fetch-devices --trigger-attendance
+### 🐳 Docker Commands
 
-# Resync all unsynced punches in memory-safe batches:
-php artisan attendance:auto-sync --trigger-attendance
+| Task | Command |
+| :--- | :--- |
+| **Check Container Status** | `docker compose ps` |
+| **Tail Web Server Logs** | `docker compose logs -f app` |
+| **Tail Queue Worker Logs** | `docker compose logs -f worker` |
+| **Tail Scheduler Logs** | `docker compose logs -f scheduler` |
+| **Run Central Migrations** | `docker compose exec app php artisan migrate --force` |
+| **Run Tenant Migrations** | `docker compose exec app php artisan tenants:migrate --force` |
+| **Create Admin User** | `docker compose exec app php artisan make:filament-user` |
+| **Manual Punch Auto-Sync** | `docker compose exec app php artisan attendance:auto-sync --trigger-attendance` |
+| **Poll Devices & Sync** | `docker compose exec app php artisan attendance:auto-sync --fetch-devices --trigger-attendance` |
+| **Force Full Resync** | `docker compose exec app php artisan attendance:auto-sync --force` |
+| **Restart Single Service** | `docker compose restart worker` (or `app`, `scheduler`) |
+| **Restart All Services** | `docker compose restart` |
+| **Stop All Containers** | `docker compose down` |
 
-# Force resync:
-php artisan attendance:auto-sync --force
-```
+### 🖥️ Native Host Commands (Without Docker)
+
+| Task | Command |
+| :--- | :--- |
+| **Check Supervisor Status** | `sudo supervisorctl status` |
+| **Tail Worker Log** | `tail -f storage/logs/worker.log` |
+| **Tail Scheduler Log** | `tail -f storage/logs/scheduler.log` |
+| **Tail Laravel Application Log** | `tail -f storage/logs/laravel.log` |
+| **Restart Queue Worker** | `sudo supervisorctl restart bio-frappe-worker:*` |
+| **Restart Scheduler Daemon** | `sudo supervisorctl restart bio-frappe-scheduler` |
+| **Trigger Auto-Sync Command** | `php artisan attendance:auto-sync --trigger-attendance` |
+| **Run Full Test Suite** | `php artisan test` |
 
 ---
 

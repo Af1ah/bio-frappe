@@ -292,3 +292,65 @@ sudo certbot --nginx -d attendance.yourdomain.com -d *.attendance.yourdomain.com
 - [ ] Frappe HR API User has appropriate permissions for `Employee Checkin` and `Shift Type`.
 - [ ] Frappe HR employees have `attendance_device_id` populated matching device PINs.
 - [ ] Shift Types have **Enable Auto Attendance** checked.
+
+---
+
+## 8. Single Docker Deployment (Docker Compose)
+
+Bio-Frappe includes a single, unified `Dockerfile` that builds an optimized PHP 8.2 runtime equipped with PostgreSQL/MySQL drivers, ZKTeco socket communication extensions (`sockets`), SOAP, Redis, and Supervisor.
+
+### Architecture
+Using `docker-compose.yml`, all three application services build from the single root `Dockerfile`:
+- **`app`**: Web application serving Filament and API webhooks on port 8000.
+- **`worker`**: Background queue worker processing batch punches and Frappe HR API synchronization.
+- **`scheduler`**: Scheduler daemon executing `attendance:auto-sync` every minute (no host crontab required).
+- **`pgsql`**: Isolated PostgreSQL 15 database container.
+
+### Step-by-Step Commands
+
+1. **Build and Launch All Services:**
+   ```bash
+   docker compose up -d --build
+   ```
+
+2. **Initialize Database and Migrations:**
+   ```bash
+   # Central database migrations
+   docker compose exec app php artisan migrate --force
+
+   # Multi-tenant schema/database migrations
+   docker compose exec app php artisan tenants:migrate --force
+
+   # Create initial Master Admin user
+   docker compose exec app php artisan make:filament-user
+   ```
+
+3. **Monitor Running Services and Logs:**
+   ```bash
+   # View container status
+   docker compose ps
+
+   # Tail web application logs
+   docker compose logs -f app
+
+   # Tail queue worker logs (punch batches & hardware commands)
+   docker compose logs -f worker
+
+   # Tail scheduler logs (auto-sync execution)
+   docker compose logs -f scheduler
+   ```
+
+4. **Trigger Manual Punch Sync inside Docker:**
+   ```bash
+   docker compose exec app php artisan attendance:auto-sync --trigger-attendance
+   ```
+
+5. **Stop or Restart Containers:**
+   ```bash
+   # Stop services
+   docker compose down
+
+   # Restart specific service (e.g. worker after code changes)
+   docker compose restart worker
+   ```
+

@@ -1,56 +1,118 @@
 services:
-    laravel.test:
-        build:
-            context: ./docker/8.2
-            dockerfile: Dockerfile
-            args:
-                WWWGROUP: '${WWWGROUP:-1000}'
-        image: sail-8.2/app
-        extra_hosts:
-            - 'host.docker.internal:host-gateway'
-        ports:
-            - '${APP_PORT:-8000}:80'
-            - '${VITE_PORT:-5173}:${VITE_PORT:-5173}'
-        environment:
-            WWWUSER: '${WWWUSER:-1000}'
-            LARAVEL_SAIL: 1
-            XDEBUG_MODE: '${SAIL_XDEBUG_MODE:-off}'
-            XDEBUG_CONFIG: '${SAIL_XDEBUG_CONFIG:-client_host=host.docker.internal}'
-            IGNITION_LOCAL_SITES_PATH: '${PWD}'
-        volumes:
-            - '.:/var/www/html'
-        networks:
-            - sail
-        depends_on:
-            - pgsql
-    pgsql:
-        image: 'postgres:15'
-        ports:
-            - '${FORWARD_DB_PORT:-5432}:5432'
-        environment:
-            PGPASSWORD: '${DB_PASSWORD:-secret}'
-            POSTGRES_DB: '${DB_DATABASE}'
-            POSTGRES_USER: '${DB_USERNAME}'
-            POSTGRES_PASSWORD: '${DB_PASSWORD:-secret}'
-        volumes:
-            - 'sail-pgsql:/var/lib/postgresql/data'
-            - './vendor/laravel/sail/database/pgsql/create-testing-database.sql:/docker-entrypoint-initdb.d/10-create-testing-database.sql'
-        networks:
-            - sail
-        healthcheck:
-            test:
-                - CMD
-                - pg_isready
-                - '-q'
-                - '-d'
-                - '${DB_DATABASE}'
-                - '-U'
-                - '${DB_USERNAME}'
-            retries: 3
-            timeout: 5s
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bio-frappe:latest
+    container_name: bio-frappe-app
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      APP_ROLE: app
+      APP_ENV: "${APP_ENV:-docker}"
+      APP_KEY: "${APP_KEY:-base64:2Aj7pazRQSZuzlV5NCb7IOdwFGFVHWmpuAuO6cq6zWo=}"
+      APP_DEBUG: "${APP_DEBUG:-true}"
+      APP_URL: "${APP_URL:-http://localhost:8000}"
+      DB_CONNECTION: pgsql
+      DB_HOST: pgsql
+      DB_PORT: 5432
+      DB_DATABASE: "${DB_DATABASE:-bio_frappe}"
+      DB_USERNAME: "${DB_USERNAME:-bio_user}"
+      DB_PASSWORD: "${DB_PASSWORD:-secret}"
+      QUEUE_CONNECTION: database
+      FRAPPE_HR_URL: "${FRAPPE_HR_URL:-https://hrm.secumaxtech.com}"
+      FRAPPE_HR_API_KEY: "${FRAPPE_HR_API_KEY}"
+      FRAPPE_HR_API_SECRET: "${FRAPPE_HR_API_SECRET}"
+    volumes:
+      - .:/var/www/html
+      - bio-frappe-vendor:/var/www/html/vendor
+    depends_on:
+      pgsql:
+        condition: service_healthy
+    networks:
+      - bio-network
+
+  worker:
+    image: bio-frappe:latest
+    container_name: bio-frappe-worker
+    restart: unless-stopped
+    environment:
+      APP_ROLE: worker
+      APP_ENV: "${APP_ENV:-docker}"
+      APP_KEY: "${APP_KEY:-base64:2Aj7pazRQSZuzlV5NCb7IOdwFGFVHWmpuAuO6cq6zWo=}"
+      DB_CONNECTION: pgsql
+      DB_HOST: pgsql
+      DB_PORT: 5432
+      DB_DATABASE: "${DB_DATABASE:-bio_frappe}"
+      DB_USERNAME: "${DB_USERNAME:-bio_user}"
+      DB_PASSWORD: "${DB_PASSWORD:-secret}"
+      QUEUE_CONNECTION: database
+      FRAPPE_HR_URL: "${FRAPPE_HR_URL:-https://hrm.secumaxtech.com}"
+      FRAPPE_HR_API_KEY: "${FRAPPE_HR_API_KEY}"
+      FRAPPE_HR_API_SECRET: "${FRAPPE_HR_API_SECRET}"
+    volumes:
+      - .:/var/www/html
+      - bio-frappe-vendor:/var/www/html/vendor
+    depends_on:
+      pgsql:
+        condition: service_healthy
+    networks:
+      - bio-network
+
+  scheduler:
+    image: bio-frappe:latest
+    container_name: bio-frappe-scheduler
+    restart: unless-stopped
+    environment:
+      APP_ROLE: scheduler
+      APP_ENV: "${APP_ENV:-docker}"
+      APP_KEY: "${APP_KEY:-base64:2Aj7pazRQSZuzlV5NCb7IOdwFGFVHWmpuAuO6cq6zWo=}"
+      DB_CONNECTION: pgsql
+      DB_HOST: pgsql
+      DB_PORT: 5432
+      DB_DATABASE: "${DB_DATABASE:-bio_frappe}"
+      DB_USERNAME: "${DB_USERNAME:-bio_user}"
+      DB_PASSWORD: "${DB_PASSWORD:-secret}"
+      QUEUE_CONNECTION: database
+      FRAPPE_HR_URL: "${FRAPPE_HR_URL:-https://hrm.secumaxtech.com}"
+      FRAPPE_HR_API_KEY: "${FRAPPE_HR_API_KEY}"
+      FRAPPE_HR_API_SECRET: "${FRAPPE_HR_API_SECRET}"
+    volumes:
+      - .:/var/www/html
+      - bio-frappe-vendor:/var/www/html/vendor
+    depends_on:
+      pgsql:
+        condition: service_healthy
+    networks:
+      - bio-network
+
+  pgsql:
+    image: postgres:15-alpine
+    container_name: bio-frappe-postgres
+    restart: unless-stopped
+    ports:
+      - "${FORWARD_DB_PORT:-5433}:5432"
+    environment:
+      POSTGRES_DB: "${DB_DATABASE:-bio_frappe}"
+      POSTGRES_USER: "${DB_USERNAME:-bio_user}"
+      POSTGRES_PASSWORD: "${DB_PASSWORD:-secret}"
+    volumes:
+      - bio-frappe-pgsql:/var/lib/postgresql/data
+    networks:
+      - bio-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-bio_user} -d ${DB_DATABASE:-bio_frappe}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
 networks:
-    sail:
-        driver: bridge
+  bio-network:
+    driver: bridge
+
 volumes:
-    sail-pgsql:
-        driver: local
+  bio-frappe-pgsql:
+    driver: local
+  bio-frappe-vendor:
+    driver: local
