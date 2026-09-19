@@ -34,6 +34,9 @@ services:
       - bio-network
 
   worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: bio-frappe:latest
     container_name: bio-frappe-worker
     restart: unless-stopped
@@ -61,6 +64,9 @@ services:
       - bio-network
 
   scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: bio-frappe:latest
     container_name: bio-frappe-scheduler
     restart: unless-stopped
