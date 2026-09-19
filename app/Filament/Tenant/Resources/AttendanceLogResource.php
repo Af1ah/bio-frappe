@@ -211,12 +211,12 @@ class AttendanceLogResource extends Resource
                         ->color('info')
                         ->action(function (Collection $records) {
                             $tenant = tenancy()->tenant;
-                            foreach ($records as $record) {
-                                \App\Jobs\SyncFrappeCheckinJob::dispatch($record, $tenant);
+                            foreach ($records->pluck('id')->chunk(50) as $chunkIds) {
+                                \App\Jobs\SyncFrappeCheckinBatchJob::dispatch($chunkIds->toArray(), $tenant);
                             }
                             Notification::make()
                                 ->title('Queued for Frappe HR Sync')
-                                ->body("{$records->count()} attendance logs queued for background sync.")
+                                ->body("{$records->count()} attendance logs queued in high-performance batches.")
                                 ->success()
                                 ->send();
                         }),

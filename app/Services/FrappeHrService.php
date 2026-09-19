@@ -205,6 +205,153 @@ class FrappeHrService
     }
 
     /**
+     * Batch sync attendance logs to Frappe HR using a concurrent HTTP pool.
+     *
+     * @param \Illuminate\Support\Collection|array $logs
+     * @param Organisation|null $organisation
+     * @param int $concurrency Max parallel requests per sub-batch (default: 10)
+     * @return array
+     */
+    public function syncAttendanceBatch($logs, ?Organisation $organisation = null, int $concurrency = 10): array
+    {
+        $cfg = $this->getConfig($organisation);
+
+        if (empty($cfg['api_key']) || empty($cfg['api_secret'])) {
+            return [
+                'success' => false,
+                'error' => 'Frappe HR API credentials are not configured.',
+                'synced' => 0,
+                'failed' => count($logs),
+            ];
+        }
+
+        $logsCollection = collect($logs);
+        if ($logsCollection->isEmpty()) {
+            return ['success' => true, 'total' => 0, 'synced' => 0, 'failed' => 0];
+        }
+
+        $endpoint = "{$cfg['url']}/api/method/hrms.hr.doctype.employee_checkin.employee_checkin.add_log_based_on_employee_field";
+        $headers = [
+            'Authorization' => "token {$cfg['api_key']}:{$cfg['api_secret']}",
+            'Accept' => 'application/json',
+            'Content-Type' => 'application/json',
+        ];
+
+        $totalSynced = 0;
+        $totalFailed = 0;
+
+        // Process in manageable concurrent chunks to prevent overwhelming Frappe HR server
+        foreach ($logsCollection->chunk($concurrency) as $chunk) {
+            $responses = Http::pool(function ($pool) use ($chunk, $cfg, $endpoint, $headers) {
+                $poolRequests = [];
+                foreach ($chunk as $log) {
+                    if (empty($log->pin) || empty($log->punched_at)) {
+                        continue;
+                    }
+
+                    $device = $log->device;
+                    $logType = match ($log->status) {
+                        0 => 'IN',
+                        1 => 'OUT',
+                        default => null,
+                    };
+
+                    $data = [
+                        'employee_field_value' => (string) $log->pin,
+                        'timestamp' => $log->punched_at->format('Y-m-d H:i:s'),
+                        'device_id' => $device ? ($device->name ?: $device->serial_number) : null,
+                        'log_type' => $logType,
+                        'employee_fieldname' => $cfg['employee_fieldname'] ?: 'attendance_device_id',
+                    ];
+
+                    $poolRequests[(string) $log->id] = $pool->as((string) $log->id)
+                        ->timeout(15)
+                        ->withHeaders($headers)
+                        ->post($endpoint, $data);
+                }
+                return $poolRequests;
+            });
+
+            // Process results for each log in this chunk
+            foreach ($chunk as $log) {
+                if (empty($log->pin) || empty($log->punched_at)) {
+                    $totalFailed++;
+                    $log->frappe_error = 'Missing PIN or timestamp';
+                    if ($log->exists) {
+                        $log->saveQuietly();
+                    }
+                    continue;
+                }
+
+                $response = $responses[(string) $log->id] ?? null;
+
+                if (!$response) {
+                    $totalFailed++;
+                    $log->frappe_error = 'No response from connection pool';
+                    if ($log->exists) {
+                        $log->saveQuietly();
+                    }
+                    continue;
+                }
+
+                if ($response instanceof \Throwable) {
+                    $totalFailed++;
+                    $log->frappe_error = substr($response->getMessage(), 0, 500);
+                    if ($log->exists) {
+                        $log->saveQuietly();
+                    }
+                    continue;
+                }
+
+                if ($response->successful()) {
+                    $data = $response->json('message') ?: $response->json();
+                    $docName = is_string($data) ? $data : ($data['name'] ?? null);
+                    $log->frappe_synced_at = now();
+                    $log->frappe_error = null;
+                    $log->frappe_log_id = $docName;
+                    if ($log->exists) {
+                        $log->saveQuietly();
+                    }
+                    $totalSynced++;
+                    continue;
+                }
+
+                $body = $response->json();
+                $errorMessage = $body['exception'] ?? ($body['_server_messages'] ?? $response->body());
+
+                // Check for duplicate punch
+                if (str_contains($errorMessage, 'already has a log with the same timestamp')) {
+                    preg_match('/Employee Checkin\/([^\"]+)/', $errorMessage, $matches);
+                    $docName = $matches[1] ?? null;
+                    $log->frappe_synced_at = now();
+                    $log->frappe_error = null;
+                    $log->frappe_log_id = $docName;
+                    if ($log->exists) {
+                        $log->saveQuietly();
+                    }
+                    $totalSynced++;
+                    continue;
+                }
+
+                $log->frappe_error = substr($errorMessage, 0, 500);
+                if ($log->exists) {
+                    $log->saveQuietly();
+                }
+                $totalFailed++;
+            }
+
+            unset($responses);
+        }
+
+        return [
+            'success' => $totalFailed === 0,
+            'total' => $logsCollection->count(),
+            'synced' => $totalSynced,
+            'failed' => $totalFailed,
+        ];
+    }
+
+    /**
      * Retrieve employees from Frappe HR.
      */
     public function getEmployees(?Organisation $organisation = null): array
@@ -228,6 +375,93 @@ class FrappeHrService
         } catch (Exception $e) {
             Log::error("Failed to fetch Frappe HR employees: " . $e->getMessage());
             return [];
+        }
+    }
+
+    /**
+     * Retrieve active Shift Types from Frappe HR.
+     */
+    public function getShiftTypes(?Organisation $organisation = null): array
+    {
+        $cfg = $this->getConfig($organisation);
+
+        try {
+            $response = Http::timeout(10)
+                ->withHeaders([
+                    'Authorization' => "token {$cfg['api_key']}:{$cfg['api_secret']}",
+                ])
+                ->get("{$cfg['url']}/api/resource/Shift Type", [
+                    'fields' => json_encode(['name', 'enable_auto_attendance']),
+                    'limit_page_length' => 100,
+                ]);
+
+            if ($response->successful()) {
+                return $response->json('data') ?: [];
+            }
+            return [];
+        } catch (Exception $e) {
+            Log::error("Failed to fetch Frappe HR Shift Types: " . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Trigger Auto Attendance calculation on a Shift Type in Frappe HR.
+     */
+    public function triggerAutoAttendance(string $shiftTypeName = 'General Shift', ?Organisation $organisation = null): array
+    {
+        $cfg = $this->getConfig($organisation);
+
+        if (empty($cfg['api_key']) || empty($cfg['api_secret'])) {
+            return [
+                'success' => false,
+                'error' => 'Frappe HR credentials not configured',
+            ];
+        }
+
+        try {
+            // First ensure last_sync_of_checkin is updated so Frappe's auto-attendance doesn't exit early
+            Http::timeout(10)
+                ->withHeaders([
+                    'Authorization' => "token {$cfg['api_key']}:{$cfg['api_secret']}",
+                    'Accept' => 'application/json',
+                ])
+                ->put("{$cfg['url']}/api/resource/Shift Type/" . rawurlencode($shiftTypeName), [
+                    'last_sync_of_checkin' => now()->format('Y-m-d H:i:s'),
+                ]);
+
+            // Run process_auto_attendance document method
+            $response = Http::timeout(30)
+                ->withHeaders([
+                    'Authorization' => "token {$cfg['api_key']}:{$cfg['api_secret']}",
+                    'Accept' => 'application/json',
+                ])
+                ->post("{$cfg['url']}/api/method/run_doc_method", [
+                    'dt' => 'Shift Type',
+                    'dn' => $shiftTypeName,
+                    'method' => 'process_auto_attendance',
+                ]);
+
+            if ($response->successful()) {
+                return [
+                    'success' => true,
+                    'shift' => $shiftTypeName,
+                    'data' => $response->json('docs') ?: $response->json(),
+                ];
+            }
+
+            return [
+                'success' => false,
+                'shift' => $shiftTypeName,
+                'error' => $response->json('exception') ?: $response->body(),
+            ];
+        } catch (Exception $e) {
+            Log::error("Error triggering Frappe Auto Attendance for {$shiftTypeName}: " . $e->getMessage());
+            return [
+                'success' => false,
+                'shift' => $shiftTypeName,
+                'error' => $e->getMessage(),
+            ];
         }
     }
 }

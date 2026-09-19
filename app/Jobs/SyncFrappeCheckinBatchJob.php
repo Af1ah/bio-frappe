@@ -12,21 +12,37 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 
-class SyncFrappeCheckinJob implements ShouldQueue
+class SyncFrappeCheckinBatchJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public $logId;
-    public $organisationId;
+    public array $logIds;
+    public ?string $organisationId;
+    public int $concurrency;
 
-    public function __construct(AttendanceLog $log, ?Organisation $organisation = null)
+    /**
+     * Create a new job instance.
+     *
+     * @param array<int> $logIds
+     * @param Organisation|null $organisation
+     * @param int $concurrency
+     */
+    public function __construct(array $logIds, ?Organisation $organisation = null, int $concurrency = 10)
     {
-        $this->logId = $log->id;
+        $this->logIds = array_values(array_filter($logIds));
         $this->organisationId = $organisation?->id ?: (tenancy()->tenant?->id ?? null);
+        $this->concurrency = $concurrency;
     }
 
+    /**
+     * Execute the job.
+     */
     public function handle(FrappeHrService $frappe): void
     {
+        if (empty($this->logIds)) {
+            return;
+        }
+
         $initializedHere = false;
         try {
             $organisation = null;
@@ -40,19 +56,25 @@ class SyncFrappeCheckinJob implements ShouldQueue
                 $organisation = tenancy()->tenant ?: ($this->organisationId ? Organisation::find($this->organisationId) : null);
             }
 
-            $log = AttendanceLog::find($this->logId);
-            if (!$log) {
+            $logs = AttendanceLog::whereIn('id', $this->logIds)
+                ->with(['device', 'user'])
+                ->get();
+
+            if ($logs->isEmpty()) {
                 return;
             }
 
-            $result = $frappe->syncAttendanceCheckin($log, $organisation);
-            if (!empty($result['success'])) {
-                Log::info("Successfully pushed punch for PIN {$log->pin} to Frappe HR.");
-            } else {
-                Log::warning("Frappe HR sync notice for PIN {$log->pin}: " . ($result['error'] ?? 'Skipped'));
-            }
+            $start = microtime(true);
+            $result = $frappe->syncAttendanceBatch($logs, $organisation, $this->concurrency);
+            $duration = round(microtime(true) - $start, 2);
+
+            Log::info("Frappe HR Batch Sync: {$result['synced']}/{$result['total']} punches synced in {$duration}s (Failed: {$result['failed']}).");
+            unset($logs);
         } catch (\Throwable $e) {
-            Log::error("Failed to sync checkin to Frappe HR: " . $e->getMessage());
+            Log::error("Failed to run SyncFrappeCheckinBatchJob: " . $e->getMessage(), [
+                'organisation_id' => $this->organisationId,
+                'log_count' => count($this->logIds),
+            ]);
             throw $e;
         } finally {
             if ($initializedHere && tenancy()->initialized) {
