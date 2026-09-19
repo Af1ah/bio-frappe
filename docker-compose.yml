@@ -10,8 +10,8 @@ services:
       - "${APP_PORT:-8000}:8000"
     environment:
       APP_ROLE: app
-      APP_ENV: "${APP_ENV:-docker}"
-      APP_KEY: "${APP_KEY:-base64:2Aj7pazRQSZuzlV5NCb7IOdwFGFVHWmpuAuO6cq6zWo=}"
+      APP_ENV: "${APP_ENV:-production}"
+      APP_KEY: "${APP_KEY}"
       APP_DEBUG: "${APP_DEBUG:-true}"
       APP_URL: "${APP_URL:-http://localhost:8000}"
       DB_CONNECTION: pgsql
@@ -42,8 +42,8 @@ services:
     restart: unless-stopped
     environment:
       APP_ROLE: worker
-      APP_ENV: "${APP_ENV:-docker}"
-      APP_KEY: "${APP_KEY:-base64:2Aj7pazRQSZuzlV5NCb7IOdwFGFVHWmpuAuO6cq6zWo=}"
+      APP_ENV: "${APP_ENV:-production}"
+      APP_KEY: "${APP_KEY}"
       DB_CONNECTION: pgsql
       DB_HOST: pgsql
       DB_PORT: 5432
@@ -72,8 +72,8 @@ services:
     restart: unless-stopped
     environment:
       APP_ROLE: scheduler
-      APP_ENV: "${APP_ENV:-docker}"
-      APP_KEY: "${APP_KEY:-base64:2Aj7pazRQSZuzlV5NCb7IOdwFGFVHWmpuAuO6cq6zWo=}"
+      APP_ENV: "${APP_ENV:-production}"
+      APP_KEY: "${APP_KEY}"
       DB_CONNECTION: pgsql
       DB_HOST: pgsql
       DB_PORT: 5432
