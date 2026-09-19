@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "004fca7a816ba6b0561bcab126bc2eb1",
+    "content-hash": "f3304ade72486be4efbc0b5ab920bdb4",
     "packages": [
         {
             "name": "anourvalar/eloquent-serialize",
@@ -3722,6 +3722,87 @@
                 "source": "https://github.com/Masterminds/html5-php/tree/2.10.1"
             },
             "time": "2026-06-23T18:43:15+00:00"
+        },
+        {
+            "name": "mehedijaman/laravel-zkteco",
+            "version": "dev-main",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/mehedijaman/laravel-zkteco.git",
+                "reference": "88a21c71c0cf2bf1886b6cebf1f51a78dc82235b"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/mehedijaman/laravel-zkteco/zipball/88a21c71c0cf2bf1886b6cebf1f51a78dc82235b",
+                "reference": "88a21c71c0cf2bf1886b6cebf1f51a78dc82235b",
+                "shasum": ""
+            },
+            "require": {
+                "illuminate/contracts": "^10.0||^11.0||^12.0",
+                "php": "^8.2",
+                "spatie/laravel-package-tools": "^1.16"
+            },
+            "require-dev": {
+                "larastan/larastan": "^2.9",
+                "laravel/pint": "^1.14",
+                "nunomaduro/collision": "^8.1.1||^7.10.0",
+                "orchestra/testbench": "^9.0.0||^8.22.0",
+                "pestphp/pest": "^2.34",
+                "pestphp/pest-plugin-arch": "^2.7",
+                "pestphp/pest-plugin-laravel": "^2.3",
+                "phpstan/extension-installer": "^1.3",
+                "phpstan/phpstan-deprecation-rules": "^1.1",
+                "phpstan/phpstan-phpunit": "^1.3",
+                "spatie/laravel-ray": "^1.35"
+            },
+            "default-branch": true,
+            "type": "library",
+            "extra": {
+                "laravel": {
+                    "aliases": {
+                        "LaravelZkteco": "MehediJaman\\LaravelZkteco\\Facades\\LaravelZkteco"
+                    },
+                    "providers": [
+                        "MehediJaman\\LaravelZkteco\\LaravelZktecoServiceProvider"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "MehediJaman\\LaravelZkteco\\": "src/",
+                    "MehediJaman\\LaravelZkteco\\Database\\Factories\\": "database/factories/"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Mehedi Jaman",
+                    "email": "mail4mjaman@gmail.com",
+                    "role": "Developer"
+                }
+            ],
+            "description": "Connect any zkteco fingerprint attendance machine to laravel application with no effort.",
+            "homepage": "https://github.com/mehedijaman/laravel-zkteco",
+            "keywords": [
+                "Fingerprint",
+                "TimeAttendance",
+                "laravel",
+                "zkteco"
+            ],
+            "support": {
+                "issues": "https://github.com/mehedijaman/laravel-zkteco/issues",
+                "source": "https://github.com/mehedijaman/laravel-zkteco/tree/main"
+            },
+            "funding": [
+                {
+                    "url": "https://github.com/MehediJaman",
+                    "type": "github"
+                }
+            ],
+            "time": "2026-01-12T20:18:27+00:00"
         },
         {
             "name": "monolog/monolog",
@@ -11345,7 +11426,9 @@
     ],
     "aliases": [],
     "minimum-stability": "stable",
-    "stability-flags": {},
+    "stability-flags": {
+        "mehedijaman/laravel-zkteco": 20
+    },
     "prefer-stable": true,
     "prefer-lowest": false,
     "platform": {

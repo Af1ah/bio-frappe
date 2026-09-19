@@ -38,12 +38,12 @@ class DeviceResource extends Resource
 
     public static function canEdit(\Illuminate\Database\Eloquent\Model $record): bool
     {
-        return false;
+        return true;
     }
 
     public static function canDelete(\Illuminate\Database\Eloquent\Model $record): bool
     {
-        return false;
+        return true;
     }
 
     public static function infolist(Schema $schema): Schema
@@ -51,8 +51,14 @@ class DeviceResource extends Resource
         return $schema->components([
             \Filament\Infolists\Components\TextEntry::make('serial_number'),
             \Filament\Infolists\Components\TextEntry::make('name'),
+            \Filament\Infolists\Components\TextEntry::make('ip_address')
+                ->label('IP Address'),
+            \Filament\Infolists\Components\TextEntry::make('port')
+                ->label('Port'),
             \Filament\Infolists\Components\TextEntry::make('options.location')
                 ->label('Location'),
+            \Filament\Infolists\Components\TextEntry::make('options.direction')
+                ->label('Direction'),
             \Filament\Infolists\Components\TextEntry::make('last_activity_at')
                 ->label('Last Ping')
                 ->dateTime(),
@@ -69,9 +75,17 @@ class DeviceResource extends Resource
                     ->visibleFrom('md'),
                 Tables\Columns\TextColumn::make('name')
                     ->searchable(),
+                Tables\Columns\TextColumn::make('ip_address')
+                    ->label('IP Address')
+                    ->searchable()
+                    ->toggleable(),
                 Tables\Columns\TextColumn::make('options.location')
                     ->label('Location')
                     ->searchable()
+                    ->toggleable(),
+                Tables\Columns\TextColumn::make('options.direction')
+                    ->label('Direction')
+                    ->badge()
                     ->toggleable(),
                 Tables\Columns\TextColumn::make('status')
                     ->badge()
@@ -107,6 +121,107 @@ class DeviceResource extends Resource
             ->recordActions([
                 \Filament\Actions\ActionGroup::make([
                     ViewAction::make(),
+                    \Filament\Actions\EditAction::make()
+                        ->form([
+                            \Filament\Schemas\Components\Grid::make(2)->schema([
+                                \Filament\Forms\Components\TextInput::make('serial_number')
+                                    ->required()
+                                    ->label('Serial Number')
+                                    ->columnSpan('full'),
+                                \Filament\Forms\Components\TextInput::make('name')
+                                    ->required()
+                                    ->label('Device Name'),
+                                \Filament\Forms\Components\TextInput::make('options.location')
+                                    ->required()
+                                    ->label('Location'),
+                                \Filament\Forms\Components\TextInput::make('ip_address')
+                                    ->label('IP Address')
+                                    ->placeholder('192.168.1.201'),
+                                \Filament\Forms\Components\TextInput::make('port')
+                                    ->label('Port')
+                                    ->numeric()
+                                    ->default(4370),
+                                \Filament\Forms\Components\Select::make('options.direction')
+                                    ->options([
+                                        'device based' => 'Device Based',
+                                        'IN' => 'IN',
+                                        'OUT' => 'OUT',
+                                        'IN/OUT altering' => 'IN/OUT Alternating',
+                                        'OTHER' => 'OTHER',
+                                    ])
+                                    ->required()
+                                    ->label('Direction'),
+                                \Filament\Forms\Components\TextInput::make('options.timezone')
+                                    ->default('Asia/Kolkata')
+                                    ->label('Time Zone'),
+                            ])
+                        ])
+                        ->after(function (Device $record) {
+                            $dir = $record->options['direction'] ?? '';
+                            $behavior = match ($dir) {
+                                'IN' => 'always_in',
+                                'OUT' => 'always_out',
+                                'IN/OUT altering' => 'auto',
+                                'device based' => 'device_state',
+                                default => 'device_state',
+                            };
+                            $record->update(['punch_behavior' => $behavior]);
+                        }),
+                    \Filament\Actions\Action::make('testConnection')
+                        ->label('Test Connection')
+                        ->icon('heroicon-o-signal')
+                        ->color('success')
+                        ->action(function (Device $record) {
+                            $command = \App\Models\DeviceCommand::create([
+                                'device_id' => $record->id,
+                                'command_type' => 'test_connection',
+                                'command_content' => 'Test connection and sync status',
+                                'status' => 'pending',
+                            ]);
+                            \App\Jobs\EbioDeviceCommandJob::dispatch(tenancy()->tenant, $record->serial_number, 'test_connection', $command->id);
+                            \Filament\Notifications\Notification::make()
+                                ->title('Command Queued')
+                                ->body('Connection test queued in background.')
+                                ->success()
+                                ->send();
+                        }),
+                    \Filament\Actions\Action::make('fetchAttendance')
+                        ->label('Fetch Attendance')
+                        ->icon('heroicon-o-arrow-down-tray')
+                        ->color('info')
+                        ->action(function (Device $record) {
+                            $command = \App\Models\DeviceCommand::create([
+                                'device_id' => $record->id,
+                                'command_type' => 'fetch_attendance',
+                                'command_content' => 'Fetch attendance logs from device',
+                                'status' => 'pending',
+                            ]);
+                            \App\Jobs\EbioDeviceCommandJob::dispatch(tenancy()->tenant, $record->serial_number, 'fetch_attendance', $command->id);
+                            \Filament\Notifications\Notification::make()
+                                ->title('Command Queued')
+                                ->body('Attendance fetch queued in background.')
+                                ->success()
+                                ->send();
+                        }),
+                    \Filament\Actions\Action::make('unlockDoor')
+                        ->label('Unlock Door')
+                        ->icon('heroicon-o-lock-open')
+                        ->color('warning')
+                        ->requiresConfirmation()
+                        ->action(function (Device $record) {
+                            $command = \App\Models\DeviceCommand::create([
+                                'device_id' => $record->id,
+                                'command_type' => 'unlock_door',
+                                'command_content' => 'Door unlock pulse',
+                                'status' => 'pending',
+                            ]);
+                            \App\Jobs\EbioDeviceCommandJob::dispatch(tenancy()->tenant, $record->serial_number, 'unlock_door', $command->id);
+                            \Filament\Notifications\Notification::make()
+                                ->title('Command Queued')
+                                ->body('Door unlock command queued.')
+                                ->success()
+                                ->send();
+                        }),
                     \Filament\Actions\Action::make('reboot')
                         ->label('Reboot Device')
                         ->icon('heroicon-o-power')
@@ -115,7 +230,7 @@ class DeviceResource extends Resource
                             $command = \App\Models\DeviceCommand::create([
                                 'device_id' => $record->id,
                                 'command_type' => 'reboot',
-                                'command_content' => 'eBioServer SOAP Command: reboot',
+                                'command_content' => 'Reboot device',
                                 'status' => 'pending',
                             ]);
                             \App\Jobs\EbioDeviceCommandJob::dispatch(tenancy()->tenant, $record->serial_number, 'reboot', $command->id);
@@ -134,7 +249,7 @@ class DeviceResource extends Resource
                             $command = \App\Models\DeviceCommand::create([
                                 'device_id' => $record->id,
                                 'command_type' => 'clear_logs',
-                                'command_content' => 'eBioServer SOAP Command: clear_logs',
+                                'command_content' => 'Clear device attendance logs',
                                 'status' => 'pending',
                             ]);
                             \App\Jobs\EbioDeviceCommandJob::dispatch(tenancy()->tenant, $record->serial_number, 'clear_logs', $command->id);
@@ -146,13 +261,13 @@ class DeviceResource extends Resource
                         }),
                     \Filament\Actions\Action::make('resetTransactionStamp')
                         ->label('Reset Transaction Stamp')
-                        ->icon('heroicon-o-arrow-down-tray')
+                        ->icon('heroicon-o-arrow-path')
                         ->requiresConfirmation()
                         ->action(function (Device $record) {
                             $command = \App\Models\DeviceCommand::create([
                                 'device_id' => $record->id,
                                 'command_type' => 'reset_transaction_stamp',
-                                'command_content' => 'eBioServer SOAP Command: reset_transaction_stamp',
+                                'command_content' => 'Reset transaction stamp to 0',
                                 'status' => 'pending',
                             ]);
                             \App\Jobs\EbioDeviceCommandJob::dispatch(tenancy()->tenant, $record->serial_number, 'reset_transaction_stamp', $command->id);
@@ -170,31 +285,13 @@ class DeviceResource extends Resource
                             $command = \App\Models\DeviceCommand::create([
                                 'device_id' => $record->id,
                                 'command_type' => 'reset_op_stamp',
-                                'command_content' => 'eBioServer SOAP Command: reset_op_stamp',
+                                'command_content' => 'Reset OP stamp to 0',
                                 'status' => 'pending',
                             ]);
                             \App\Jobs\EbioDeviceCommandJob::dispatch(tenancy()->tenant, $record->serial_number, 'reset_op_stamp', $command->id);
                             \Filament\Notifications\Notification::make()
                                 ->title('Command Queued')
                                 ->body('Reset OP stamp command queued.')
-                                ->success()
-                                ->send();
-                        }),
-                    \Filament\Actions\Action::make('unlockDoor')
-                        ->label('Unlock Door')
-                        ->icon('heroicon-o-lock-open')
-                        ->requiresConfirmation()
-                        ->action(function (Device $record) {
-                            $command = \App\Models\DeviceCommand::create([
-                                'device_id' => $record->id,
-                                'command_type' => 'unlock_door',
-                                'command_content' => 'eBioServer SOAP Command: unlock_door',
-                                'status' => 'pending',
-                            ]);
-                            \App\Jobs\EbioDeviceCommandJob::dispatch(tenancy()->tenant, $record->serial_number, 'unlock_door', $command->id);
-                            \Filament\Notifications\Notification::make()
-                                ->title('Command Queued')
-                                ->body('Unlock door command queued.')
                                 ->success()
                                 ->send();
                         }),

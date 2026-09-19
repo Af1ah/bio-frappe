@@ -29,6 +29,13 @@ class AttendanceLog extends Model
         parent::boot();
 
         static::created(function ($log) {
+            // Automatically push checkin to Frappe HR in background
+            try {
+                \App\Jobs\SyncFrappeCheckinJob::dispatch($log);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Frappe HR sync dispatch failed: ' . $e->getMessage());
+            }
+
             $user = $log->user;
             if ($user && !empty($user->whatsapp_number)) {
                 $status = $log->status_label;
@@ -48,6 +55,7 @@ class AttendanceLog extends Model
 
     protected $casts = [
         'punched_at' => 'datetime',
+        'frappe_synced_at' => 'datetime',
         'raw_data' => 'array',
     ];
 

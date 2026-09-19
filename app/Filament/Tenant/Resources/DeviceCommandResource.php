@@ -100,6 +100,11 @@ class DeviceCommandResource extends Resource
                         'failed' => 'danger',
                         default => 'gray',
                     }),
+                Tables\Columns\TextColumn::make('response')
+                    ->label('Response / Result')
+                    ->limit(40)
+                    ->tooltip(fn (DeviceCommand $record): ?string => $record->response)
+                    ->placeholder('Awaiting execution...'),
                 Tables\Columns\TextColumn::make('sent_at')
                     ->dateTime()
                     ->visibleFrom('md'),
@@ -110,7 +115,7 @@ class DeviceCommandResource extends Resource
                     ->label('Retries')
                     ->visibleFrom('md'),
             ])
-            ->poll(fn () => \App\Models\DeviceCommand::whereIn('status', ['pending', 'sent'])->exists() ? '10s' : null)
+            ->poll('5s')
             ->defaultSort('created_at', 'desc')
             ->filters([
                 Tables\Filters\SelectFilter::make('device')
@@ -124,20 +129,16 @@ class DeviceCommandResource extends Resource
                     ]),
                 Tables\Filters\SelectFilter::make('command_type')
                     ->options([
-                        'INFO' => 'Get Device Info',
-                        'REBOOT' => 'Reboot Device',
-                        'reboot' => 'Reboot Device (API)',
-                        'CLEAR' => 'Clear Data',
-                        'clear_logs' => 'Clear Logs (API)',
+                        'reboot' => 'Reboot Device',
+                        'fetch_attendance' => 'Fetch Attendance',
+                        'test_connection' => 'Test Connection & Ping',
+                        'unlock_door' => 'Unlock Door',
+                        'clear_logs' => 'Clear Logs',
                         'reset_transaction_stamp' => 'Reset Transaction Stamp',
                         'reset_op_stamp' => 'Reset OP Stamp',
-                        'unlock_door' => 'Unlock Door',
-                        'block_user' => 'Block User',
-                        'unblock_user' => 'Unblock User',
-                        'enroll_finger' => 'Enroll Finger',
-                        'enroll_face' => 'Enroll Face',
-                        'DATA' => 'Send Data',
-                        'CHECK' => 'Check Connection',
+                        'sync_time' => 'Synchronize Time',
+                        'test_voice' => 'Voice Test',
+                        'shutdown' => 'Power Off',
                     ]),
             ])
             ->recordActions([
@@ -146,8 +147,24 @@ class DeviceCommandResource extends Resource
                     Action::make('retry')
                         ->icon('heroicon-o-arrow-path')
                         ->color('warning')
-                        ->visible(fn (DeviceCommand $record) => in_array($record->status, ['failed', 'sent']))
-                        ->action(fn (DeviceCommand $record) => $record->retry()),
+                        ->visible(fn (DeviceCommand $record) => in_array($record->status, ['failed', 'sent', 'pending']))
+                        ->action(function (DeviceCommand $record) {
+                            $record->retry();
+                            $device = $record->device;
+                            if ($device) {
+                                \App\Jobs\EbioDeviceCommandJob::dispatch(
+                                    tenancy()->tenant,
+                                    $device->serial_number,
+                                    $record->command_type,
+                                    $record->id
+                                );
+                                \Filament\Notifications\Notification::make()
+                                    ->title('Command Re-queued')
+                                    ->body("Command has been dispatched to background queue worker.")
+                                    ->success()
+                                    ->send();
+                            }
+                        }),
                     DeleteAction::make(),
                 ])
             ])

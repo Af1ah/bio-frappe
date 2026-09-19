@@ -57,7 +57,7 @@ class EbioWebhookController extends Controller
         }
 
         if (! $logs) {
-            return 'success';
+            return response('Success', 200, ['Content-Type' => 'text/plain; charset=UTF-8']);
         }
 
         // eBioServer might send a single object or an array of objects
@@ -69,6 +69,6 @@ class EbioWebhookController extends Controller
             \App\Jobs\ProcessEbioWebhookJob::dispatch($organisation, $logs);
         }
 
-        return 'success';
+        return response('Success', 200, ['Content-Type' => 'text/plain; charset=UTF-8']);
     }
 }

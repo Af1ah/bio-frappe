@@ -14,25 +14,42 @@ class ListUsers extends ListRecords
     {
         return [
             Actions\CreateAction::make(),
-            Actions\Action::make('syncEbioUsers')
-                ->label('Sync from eBioServer')
-                ->icon('heroicon-o-arrow-path')
+            Actions\Action::make('fetchUsersFromDevice')
+                ->label('Fetch User from Device')
+                ->icon('heroicon-o-arrow-down-tray')
                 ->color('warning')
-                ->requiresConfirmation()
-                ->modalHeading('Sync Users from eBioServer')
-                ->modalDescription('This will connect to your eBioServer over the local network and pull all registered users. This may take a few moments depending on the number of users.')
-                ->action(function () {
+                ->modalHeading('Fetch Users from Device')
+                ->modalDescription('Select a biometric device to connect and pull enrolled users.')
+                ->form([
+                    \Filament\Forms\Components\Select::make('device_id')
+                        ->label('Select Device')
+                        ->options(function () {
+                            return \App\Models\Device::all()->mapWithKeys(function ($d) {
+                                $label = $d->name ?: $d->serial_number;
+                                if ($d->ip_address) {
+                                    $label .= " ({$d->ip_address})";
+                                }
+                                return [$d->id => $label];
+                            });
+                        })
+                        ->required()
+                        ->searchable()
+                        ->default(fn () => \App\Models\Device::first()?->id),
+                ])
+                ->action(function (array $data) {
                     try {
-                        \App\Jobs\SyncEbioUsersJob::dispatch(tenancy()->tenant);
+                        $device = \App\Models\Device::find($data['device_id']);
+                        \App\Jobs\SyncEbioUsersJob::dispatch(tenancy()->tenant, $data['device_id'] ?? null);
                         
+                        $name = $device ? ($device->name ?: $device->serial_number) : 'device';
                         \Filament\Notifications\Notification::make()
-                            ->title('Sync Queued')
-                            ->body("User synchronization has been queued and will run in the background.")
+                            ->title('User Fetch Queued')
+                            ->body("Fetching users from {$name} has been queued in the background.")
                             ->success()
                             ->send();
                     } catch (\Exception $e) {
                         \Filament\Notifications\Notification::make()
-                            ->title('Sync Failed')
+                            ->title('Fetch Failed')
                             ->body($e->getMessage())
                             ->danger()
                             ->send();

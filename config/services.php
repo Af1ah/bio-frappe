@@ -40,4 +40,11 @@ return [
         'api_key' => env('WHATSAPP_API_KEY'),
     ],
 
+    'frappe' => [
+        'url' => env('FRAPPE_API_URL', 'https://hrm.secumaxtech.com'),
+        'api_key' => env('FRAPPE_API_KEY'),
+        'api_secret' => env('FRAPPE_API_SECRET'),
+        'employee_fieldname' => env('FRAPPE_EMPLOYEE_FIELDNAME', 'attendance_device_id'),
+    ],
+
 ];

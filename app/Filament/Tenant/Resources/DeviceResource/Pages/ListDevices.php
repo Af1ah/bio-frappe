@@ -59,11 +59,16 @@ class ListDevices extends ListRecords
                         ->options(function (callable $get) {
                             $deviceId = $get('device_id');
                             $options = [
+                                'fetch_attendance' => 'Fetch Attendance Logs',
+                                'test_connection' => 'Test Connection & Ping',
+                                'unlock_door' => 'Unlock Door',
                                 'reboot' => 'Reboot Device',
+                                'sync_time' => 'Synchronize Device Time',
+                                'test_voice' => 'Voice Test ("Thank You")',
                                 'clear_logs' => 'CRITICAL: Clear Attendance Logs',
                                 'reset_transaction_stamp' => 'Reset Transaction Stamp',
                                 'reset_op_stamp' => 'Reset OP Stamp',
-                                'unlock_door' => 'Unlock Door',
+                                'shutdown' => 'Power Off / Shutdown Device',
                             ];
 
                             
@@ -104,7 +109,7 @@ class ListDevices extends ListRecords
             Actions\CreateAction::make()
                 ->label('Add Device')
                 ->icon('heroicon-o-plus')
-                ->modalHeading('Add New Device to eBioServer')
+                ->modalHeading('Add New Device')
                 ->form([
                     \Filament\Schemas\Components\Grid::make(2)->schema([
                         \Filament\Forms\Components\TextInput::make('serial_number')
@@ -117,21 +122,28 @@ class ListDevices extends ListRecords
                         \Filament\Forms\Components\TextInput::make('location')
                             ->required()
                             ->label('Location'),
+                        \Filament\Forms\Components\TextInput::make('ip_address')
+                            ->label('IP Address')
+                            ->placeholder('192.168.1.201'),
+                        \Filament\Forms\Components\TextInput::make('port')
+                            ->label('Port')
+                            ->numeric()
+                            ->default(4370),
                         \Filament\Forms\Components\Select::make('direction')
-                            ->options(['IN' => 'IN', 'OUT' => 'OUT', 'OTHER' => 'OTHER'])
+                            ->options([
+                                'device based' => 'Device Based',
+                                'IN' => 'IN',
+                                'OUT' => 'OUT',
+                                'IN/OUT altering' => 'IN/OUT Alternating',
+                                'OTHER' => 'OTHER',
+                            ])
+                            ->default('device based')
                             ->required()
                             ->label('Direction'),
-                        \Filament\Forms\Components\TextInput::make('device_type')
-                            ->default('Attendance')
-                            ->required()
-                            ->label('Device Type'),
                         \Filament\Forms\Components\TextInput::make('time_zone')
                             ->default('Asia/Kolkata')
                             ->required()
                             ->label('Time Zone'),
-                        \Filament\Forms\Components\TextInput::make('activation_code')
-                            ->default('0')
-                            ->label('Activation Code'),
                         \Filament\Forms\Components\Select::make('is_attendance_device')
                             ->options(['true' => 'Yes', 'false' => 'No'])
                             ->default('true')
@@ -140,34 +152,26 @@ class ListDevices extends ListRecords
                     ])
                 ])
                 ->using(function (array $data, string $model): \Illuminate\Database\Eloquent\Model {
-                    $service = new \App\Services\EbioSoapService();
-                    
-                    try {
-                        $success = $service->addDevice(tenant(), $data);
-                        if (!$success) {
-                            throw new \Exception("eBioServer API rejected the device addition.");
-                        }
-                    } catch (\Exception $e) {
-                        \Filament\Notifications\Notification::make()
-                            ->title('Add Device Failed')
-                            ->body($e->getMessage())
-                            ->danger()
-                            ->send();
-                        
-                        throw \Illuminate\Validation\ValidationException::withMessages([
-                            'serial_number' => $e->getMessage()
-                        ]);
-                    }
+                    $punchBehavior = match ($data['direction'] ?? '') {
+                        'IN' => 'always_in',
+                        'OUT' => 'always_out',
+                        'IN/OUT altering' => 'auto',
+                        'device based' => 'device_state',
+                        default => 'device_state',
+                    };
 
                     return $model::create([
                         'serial_number' => $data['serial_number'],
                         'name' => $data['name'],
+                        'ip_address' => $data['ip_address'] ?? null,
+                        'port' => !empty($data['port']) ? (int) $data['port'] : 4370,
                         'status' => 'offline',
+                        'punch_behavior' => $punchBehavior,
                         'options' => [
                             'location' => $data['location'],
                             'direction' => $data['direction'],
-                            'type' => $data['device_type'],
-                            'timezone' => $data['time_zone'],
+                            'timezone' => $data['time_zone'] ?? 'Asia/Kolkata',
+                            'is_attendance_device' => $data['is_attendance_device'] ?? 'true',
                         ]
                     ]);
                 }),
