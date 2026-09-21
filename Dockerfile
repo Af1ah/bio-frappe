@@ -9,7 +9,8 @@ RUN composer install \
     --no-progress \
     --prefer-dist \
     --optimize-autoloader \
-    --no-scripts
+    --no-scripts \
+    --ignore-platform-req=ext-*
 
 COPY . ./
 RUN composer dump-autoload --no-dev --classmap-authoritative --no-scripts
@@ -56,6 +57,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* /tmp/pear
 
 COPY docker/php/opcache.ini /usr/local/etc/php/conf.d/opcache.ini
+COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
 COPY --from=vendor /app/vendor ./vendor
 COPY . ./
 COPY --from=frontend /app/public/build ./public/build
@@ -63,6 +65,8 @@ COPY --from=frontend /app/public/sw.js ./public/sw.js
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint
 
 RUN mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache \
+    && composer check-platform-reqs --no-dev \
+    && rm /usr/local/bin/composer \
     && chmod +x /usr/local/bin/docker-entrypoint \
     && rm -rf public/storage \
     && ln -s /var/www/html/storage/app/public public/storage \
