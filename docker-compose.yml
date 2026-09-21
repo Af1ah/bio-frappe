@@ -30,6 +30,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: application
     image: bio-frappe:production
     restart: unless-stopped
     environment: *app-environment
