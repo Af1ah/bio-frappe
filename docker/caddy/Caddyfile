@@ -1,0 +1,19 @@
+{$CADDY_SITE_ADDRESS} {
+	root * /var/www/html/public
+	encode zstd gzip
+
+	php_fastcgi app:9000
+	file_server
+
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+		X-Frame-Options SAMEORIGIN
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

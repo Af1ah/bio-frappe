@@ -7,6 +7,11 @@ storage/framework/sessions/*
 storage/framework/views/*
 storage/logs/*
 .env
+.env.docker
+/storage
+/bootstrap/cache/*.php
+/public/build
+/public/sw.js
 .env.backup
 .phpunit.result.cache
 .vscode

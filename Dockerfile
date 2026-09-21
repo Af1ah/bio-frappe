@@ -1,65 +1,81 @@
-FROM php:8.4-cli-bookworm
+FROM composer:2 AS vendor
+
+WORKDIR /app
+
+COPY composer.json composer.lock ./
+RUN composer install \
+    --no-dev \
+    --no-interaction \
+    --no-progress \
+    --prefer-dist \
+    --optimize-autoloader \
+    --no-scripts
+
+COPY . ./
+RUN composer dump-autoload --no-dev --classmap-authoritative --no-scripts
+
+FROM node:22-bookworm-slim AS frontend
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . ./
+RUN npm run build
+
+FROM php:8.3-fpm-bookworm AS application
 
 WORKDIR /var/www/html
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    TZ=UTC \
-    APP_PORT=8000 \
-    COMPOSER_ALLOW_SUPERUSER=1
-
-RUN apt-get update && apt-get install -y \
-    git \
-    curl \
-    libpng-dev \
-    libonig-dev \
-    libxml2-dev \
-    zip \
-    unzip \
-    supervisor \
-    postgresql-client \
-    default-mysql-client \
-    nano \
-    && rm -rf /var/lib/apt/lists/*
-
-ADD https://github.com/mlocati/docker-php-extension-installer/releases/latest/download/install-php-extensions /usr/local/bin/
-RUN chmod +x /usr/local/bin/install-php-extensions && \
-    install-php-extensions \
-        pdo_pgsql \
-        pdo_mysql \
-        mbstring \
-        xml \
-        curl \
-        zip \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libfreetype6-dev \
+        libicu-dev \
+        libjpeg62-turbo-dev \
+        libonig-dev \
+        libpng-dev \
+        libpq-dev \
+        libxml2-dev \
+        libzip-dev \
+    && docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install -j"$(nproc)" \
         bcmath \
-        intl \
-        soap \
-        redis \
-        sockets \
-        pcntl \
         gd \
-        opcache
+        intl \
+        mbstring \
+        opcache \
+        pdo_mysql \
+        pdo_pgsql \
+        soap \
+        sockets \
+        xml \
+        zip \
+    && pecl install redis \
+    && docker-php-ext-enable redis \
+    && rm -rf /var/lib/apt/lists/* /tmp/pear
 
-COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+COPY docker/php/opcache.ini /usr/local/etc/php/conf.d/opcache.ini
+COPY --from=vendor /app/vendor ./vendor
+COPY . ./
+COPY --from=frontend /app/public/build ./public/build
+COPY --from=frontend /app/public/sw.js ./public/sw.js
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint
 
-# Copy composer files and install production dependencies
-COPY composer.json composer.lock /var/www/html/
-RUN composer install --no-dev --no-scripts --no-autoloader --prefer-dist --ignore-platform-req=php+
+RUN mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache \
+    && chmod +x /usr/local/bin/docker-entrypoint \
+    && rm -rf public/storage \
+    && ln -s /var/www/html/storage/app/public public/storage \
+    && chown -R www-data:www-data storage bootstrap/cache
 
-# Copy application files
-COPY . /var/www/html
+USER www-data
 
-# Dump optimized autoloader
-RUN composer dump-autoload --optimize --no-dev
+EXPOSE 9000
 
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-COPY supervisord.docker.conf /etc/supervisor/conf.d/supervisord.conf
+ENTRYPOINT ["docker-entrypoint"]
+CMD ["php-fpm"]
 
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+FROM caddy:2.11-alpine AS caddy
 
-RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache || true \
-    && chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache || true
-
-EXPOSE 8000
-
-ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8000"]
+COPY docker/caddy/Caddyfile /etc/caddy/Caddyfile
+COPY --from=application /var/www/html/public /var/www/html/public

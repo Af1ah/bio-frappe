@@ -1,117 +1,121 @@
+x-app-environment: &app-environment
+  APP_NAME: "${APP_NAME:-Bio-Frappe}"
+  APP_ENV: "${APP_ENV:-production}"
+  APP_KEY: "${APP_KEY:-}"
+  APP_DEBUG: "${APP_DEBUG:-false}"
+  APP_URL: "${APP_URL:?Set APP_URL in .env.docker}"
+  APP_TIMEZONE: "${APP_TIMEZONE:-Asia/Kolkata}"
+  CENTRAL_DOMAIN: "${CENTRAL_DOMAIN:?Set CENTRAL_DOMAIN in .env.docker}"
+  LOG_CHANNEL: stderr
+  LOG_LEVEL: "${LOG_LEVEL:-warning}"
+  BROADCAST_CONNECTION: log
+  DB_CONNECTION: pgsql
+  DB_HOST: pgsql
+  DB_PORT: 5432
+  DB_DATABASE: "${DB_DATABASE:?Set DB_DATABASE in .env.docker}"
+  DB_USERNAME: "${DB_USERNAME:?Set DB_USERNAME in .env.docker}"
+  DB_PASSWORD: "${DB_PASSWORD:?Set DB_PASSWORD in .env.docker}"
+  CACHE_STORE: database
+  DB_CACHE_CONNECTION: pgsql
+  QUEUE_CONNECTION: database
+  DB_QUEUE_CONNECTION: pgsql
+  SESSION_DRIVER: database
+  SESSION_CONNECTION: pgsql
+  FRAPPE_HR_URL: "${FRAPPE_HR_URL:-https://hrm.secumaxtech.com}"
+  FRAPPE_HR_API_KEY: "${FRAPPE_HR_API_KEY:-}"
+  FRAPPE_HR_API_SECRET: "${FRAPPE_HR_API_SECRET:-}"
+
 services:
   app:
     build:
       context: .
       dockerfile: Dockerfile
-    image: bio-frappe:latest
-    container_name: bio-frappe-app
+    image: bio-frappe:production
     restart: unless-stopped
-    ports:
-      - "${APP_PORT:-8000}:8000"
-    environment:
-      APP_ROLE: app
-      APP_ENV: "${APP_ENV:-production}"
-      APP_KEY: "${APP_KEY}"
-      APP_DEBUG: "${APP_DEBUG:-true}"
-      APP_URL: "${APP_URL:-http://localhost:8000}"
-      DB_CONNECTION: pgsql
-      DB_HOST: pgsql
-      DB_PORT: 5432
-      DB_DATABASE: "${DB_DATABASE:-bio_frappe}"
-      DB_USERNAME: "${DB_USERNAME:-bio_user}"
-      DB_PASSWORD: "${DB_PASSWORD:-secret}"
-      QUEUE_CONNECTION: database
-      FRAPPE_HR_URL: "${FRAPPE_HR_URL:-https://hrm.secumaxtech.com}"
-      FRAPPE_HR_API_KEY: "${FRAPPE_HR_API_KEY}"
-      FRAPPE_HR_API_SECRET: "${FRAPPE_HR_API_SECRET}"
+    environment: *app-environment
+    expose:
+      - "9000"
     volumes:
-      - .:/var/www/html
-      - bio-frappe-vendor:/var/www/html/vendor
+      - bio-frappe-storage:/var/www/html/storage
     depends_on:
       pgsql:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "php artisan migrate:status --no-ansi 2>&1 | grep -q 'Ran'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     networks:
       - bio-network
 
   worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: bio-frappe:latest
-    container_name: bio-frappe-worker
+    image: bio-frappe:production
     restart: unless-stopped
-    environment:
-      APP_ROLE: worker
-      APP_ENV: "${APP_ENV:-production}"
-      APP_KEY: "${APP_KEY}"
-      DB_CONNECTION: pgsql
-      DB_HOST: pgsql
-      DB_PORT: 5432
-      DB_DATABASE: "${DB_DATABASE:-bio_frappe}"
-      DB_USERNAME: "${DB_USERNAME:-bio_user}"
-      DB_PASSWORD: "${DB_PASSWORD:-secret}"
-      QUEUE_CONNECTION: database
-      FRAPPE_HR_URL: "${FRAPPE_HR_URL:-https://hrm.secumaxtech.com}"
-      FRAPPE_HR_API_KEY: "${FRAPPE_HR_API_KEY}"
-      FRAPPE_HR_API_SECRET: "${FRAPPE_HR_API_SECRET}"
+    command: ["php", "artisan", "queue:work", "--sleep=2", "--tries=3", "--timeout=120", "--max-time=3600"]
+    environment: *app-environment
     volumes:
-      - .:/var/www/html
-      - bio-frappe-vendor:/var/www/html/vendor
+      - bio-frappe-storage:/var/www/html/storage
     depends_on:
-      pgsql:
+      app:
         condition: service_healthy
+    stop_grace_period: 2m
     networks:
       - bio-network
 
   scheduler:
+    image: bio-frappe:production
+    restart: unless-stopped
+    command: ["php", "artisan", "schedule:work"]
+    environment: *app-environment
+    volumes:
+      - bio-frappe-storage:/var/www/html/storage
+    depends_on:
+      app:
+        condition: service_healthy
+    stop_grace_period: 1m
+    networks:
+      - bio-network
+
+  caddy:
     build:
       context: .
       dockerfile: Dockerfile
-    image: bio-frappe:latest
-    container_name: bio-frappe-scheduler
+      target: caddy
+    image: bio-frappe-caddy:production
     restart: unless-stopped
     environment:
-      APP_ROLE: scheduler
-      APP_ENV: "${APP_ENV:-production}"
-      APP_KEY: "${APP_KEY}"
-      DB_CONNECTION: pgsql
-      DB_HOST: pgsql
-      DB_PORT: 5432
-      DB_DATABASE: "${DB_DATABASE:-bio_frappe}"
-      DB_USERNAME: "${DB_USERNAME:-bio_user}"
-      DB_PASSWORD: "${DB_PASSWORD:-secret}"
-      QUEUE_CONNECTION: database
-      FRAPPE_HR_URL: "${FRAPPE_HR_URL:-https://hrm.secumaxtech.com}"
-      FRAPPE_HR_API_KEY: "${FRAPPE_HR_API_KEY}"
-      FRAPPE_HR_API_SECRET: "${FRAPPE_HR_API_SECRET}"
-    volumes:
-      - .:/var/www/html
-      - bio-frappe-vendor:/var/www/html/vendor
+      CADDY_SITE_ADDRESS: "${CADDY_SITE_ADDRESS:?Set CADDY_SITE_ADDRESS in .env.docker}"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
     depends_on:
-      pgsql:
+      app:
         condition: service_healthy
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+      - bio-frappe-storage:/var/www/html/storage:ro
     networks:
       - bio-network
 
   pgsql:
-    image: postgres:15-alpine
-    container_name: bio-frappe-postgres
+    image: postgres:16-alpine
     restart: unless-stopped
-    ports:
-      - "${FORWARD_DB_PORT:-5433}:5432"
     environment:
-      POSTGRES_DB: "${DB_DATABASE:-bio_frappe}"
-      POSTGRES_USER: "${DB_USERNAME:-bio_user}"
-      POSTGRES_PASSWORD: "${DB_PASSWORD:-secret}"
+      POSTGRES_DB: "${DB_DATABASE:?Set DB_DATABASE in .env.docker}"
+      POSTGRES_USER: "${DB_USERNAME:?Set DB_USERNAME in .env.docker}"
+      POSTGRES_PASSWORD: "${DB_PASSWORD:?Set DB_PASSWORD in .env.docker}"
     volumes:
       - bio-frappe-pgsql:/var/lib/postgresql/data
-    networks:
-      - bio-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-bio_user} -d ${DB_DATABASE:-bio_frappe}"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 12
+    networks:
+      - bio-network
 
 networks:
   bio-network:
@@ -119,6 +123,6 @@ networks:
 
 volumes:
   bio-frappe-pgsql:
-    driver: local
-  bio-frappe-vendor:
-    driver: local
+  bio-frappe-storage:
+  caddy-data:
+  caddy-config:
