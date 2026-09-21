@@ -19,6 +19,7 @@
 /public/storage
 /storage/*.key
 /storage/pail
+/storage/framework/*.pid
 /vendor
 /reference
 Homestead.json

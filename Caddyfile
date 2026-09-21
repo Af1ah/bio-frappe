@@ -1,0 +1,21 @@
+# Native Windows production configuration for Bio-Frappe.
+# Caddy manages HTTPS for localhost. Change `localhost` and APP_URL together
+# when deploying under a real domain.
+localhost {
+	root * C:/Users/Aflah/projects/bio-frappe/public
+	encode zstd gzip
+
+	php_fastcgi 127.0.0.1:9000
+	file_server
+
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+		X-Frame-Options SAMEORIGIN
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+
+	log {
+		output file C:/Users/Aflah/projects/bio-frappe/storage/logs/caddy.log
+	}
+}
