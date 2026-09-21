@@ -125,8 +125,9 @@ class DeviceResource extends Resource
                         ->form([
                             \Filament\Schemas\Components\Grid::make(2)->schema([
                                 \Filament\Forms\Components\TextInput::make('serial_number')
-                                    ->required()
                                     ->label('Serial Number')
+                                    ->disabled()
+                                    ->dehydrated(false)
                                     ->columnSpan('full'),
                                 \Filament\Forms\Components\TextInput::make('name')
                                     ->required()
@@ -136,10 +137,13 @@ class DeviceResource extends Resource
                                     ->label('Location'),
                                 \Filament\Forms\Components\TextInput::make('ip_address')
                                     ->label('IP Address')
+                                    ->ip()
                                     ->placeholder('192.168.1.201'),
                                 \Filament\Forms\Components\TextInput::make('port')
                                     ->label('Port')
                                     ->numeric()
+                                    ->minValue(1)
+                                    ->maxValue(65535)
                                     ->default(4370),
                                 \Filament\Forms\Components\Select::make('options.direction')
                                     ->options([
@@ -154,8 +158,26 @@ class DeviceResource extends Resource
                                 \Filament\Forms\Components\TextInput::make('options.timezone')
                                     ->default('Asia/Kolkata')
                                     ->label('Time Zone'),
+                                \Filament\Forms\Components\Select::make('options.is_attendance_device')
+                                    ->options([
+                                        'true' => 'Yes',
+                                        'false' => 'No',
+                                    ])
+                                    ->default('true')
+                                    ->required()
+                                    ->label('Is Attendance Device'),
                             ])
                         ])
+                        ->using(function (Device $record, array $data): Device {
+                            $options = $data['options'] ?? [];
+                            unset($data['options'], $data['serial_number']);
+
+                            $record->fill($data);
+                            $record->options = array_replace($record->options ?? [], $options);
+                            $record->save();
+
+                            return $record;
+                        })
                         ->after(function (Device $record) {
                             $dir = $record->options['direction'] ?? '';
                             $behavior = match ($dir) {
@@ -167,6 +189,11 @@ class DeviceResource extends Resource
                             };
                             $record->update(['punch_behavior' => $behavior]);
                         }),
+                    \Filament\Actions\DeleteAction::make()
+                        ->requiresConfirmation()
+                        ->modalHeading('Delete device permanently')
+                        ->modalDescription('This permanently deletes the device, its attendance logs, and its command history.')
+                        ->modalSubmitActionLabel('Delete device'),
                     \Filament\Actions\Action::make('testConnection')
                         ->label('Test Connection')
                         ->icon('heroicon-o-signal')
